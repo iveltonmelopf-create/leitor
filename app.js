@@ -213,23 +213,26 @@ async function coverFromBuf(it, buf) {
   finally { try { book.destroy(); } catch { } }
 }
 let covering = false;
-async function genCovers() {
-  if (covering || !authed() || !navigator.onLine || navigator.connection?.saveData) return;
+async function genCovers(manual) {
+  if (covering) { if (manual) toast('Já estou buscando as capas…'); return; }
+  if (!authed()) { if (manual) toast('Entre com o Google primeiro (Configurações).', 4000); return; }
+  if (!navigator.onLine) { if (manual) toast('Sem internet.'); return; }
+  if (navigator.connection?.saveData && !manual) return;
   const todo = S.library.filter(x => !x.cover && !x.noCover && !x.local && (!x.size || x.size < 60e6));
-  if (!todo.length) return;
-  covering = true; let n = 0; toast('Buscando as capas dos livros (só na primeira vez)…', 4000);
+  if (!todo.length) { if (manual) toast('Todos os livros já têm capa (ou não têm imagem de capa no arquivo).', 4000); return; }
+  covering = true; let n = 0, ok = 0, fail = 0, lastErr = ''; toast('Buscando as capas de ' + todo.length + ' livros (só na primeira vez)…', 4000);
   try {
     for (const it of todo) {
       while (cur) await sleep(2500);                  // não atrapalha enquanto você lê
       if (!authed()) break;
       try {
         const buf = await getFileBuf(it, true), cv = await coverFromBuf(it, buf);
-        if (cv) it.cover = cv; else it.noCover = true;
-      } catch (e) { console.warn('capa', it.name, e); if (e.message !== 'auth') it.noCover = true; else break; }
+        if (cv) { it.cover = cv; ok++; } else { it.noCover = true; fail++; }
+      } catch (e) { console.warn('capa', it.name, e); lastErr = e.message; if (e.message !== 'auth') { it.noCover = true; fail++; } else break; }
       if (++n % 3 === 0) { saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); }
       await sleep(200);
     }
-  } finally { covering = false; saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); toast('Capas prontas', 1500); }
+  } finally { covering = false; saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); toast('Capas: ' + ok + ' encontradas' + (fail ? ', ' + fail + ' sem capa' : '') + (lastErr ? ' (' + lastErr.slice(0, 60) + ')' : ''), 5000); }
 }
 
 /* ---------- estante ---------- */
@@ -313,9 +316,13 @@ function openSettings() {
       <label>Client ID do Google (OAuth, tipo "Aplicativo da Web")</label><input id="sCid" type="text" placeholder="123456-abc.apps.googleusercontent.com">
       <label>Pasta do Drive com os livros (nome, link ou ID — vazio = pasta oficial)</label><input id="sFolder" type="text" placeholder="Livros">
       <button class="primary" id="sSave">Salvar e entrar</button>
+      <label>Capas dos livros</label><div class="help" id="sCov"></div><button id="sCovBtn" class="primary">Buscar capas agora</button>
       <button id="sOut" style="margin:.2rem .4rem">Sair da conta neste aparelho</button>
       <div class="help">Aparência (tema, fonte, modo de rolagem) fica no botão <b>Aa</b> dentro do livro.<br>O progresso, os destaques, as notas e a tinta da caneta ficam na área privada do app no seu Drive (não aparecem nos seus arquivos).</div>`;
     $('#sCid').value = cfg.clientId; $('#sFolder').value = cfg.folder;
+    const nd = S.library.filter(x => !x.local), nc = nd.filter(x => x.cover).length, nn = nd.filter(x => !x.cover && x.noCover).length;
+    $('#sCov').textContent = nc + ' de ' + nd.length + ' livros do Drive com capa' + (nn ? ' · ' + nn + ' sem imagem de capa no arquivo' : '') + '.';
+    $('#sCovBtn').onclick = () => { S.library.forEach(x => { if (!x.cover) x.noCover = false; }); closePanel(); genCovers(true); };
     $('#sSave').onclick = async () => {
       cfg.clientId = $('#sCid').value.trim(); cfg.folder = $('#sFolder').value.trim(); saveCfg(); closePanel();
       try { await signIn('select_account'); hideBanner(); doSync(); } catch (e) { showBanner(e.message, true); }
@@ -1057,7 +1064,7 @@ window.addEventListener('online', () => { if (cur) syncBook(cur.item.id); });
   applyTheme(); applyNight(); renderLibrary();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
   if (cfg.clientId && navigator.onLine) {
-    if (authed()) doSync();
+    if (authed()) { doSync(); genCovers(); }
     else if (lsGet('wasLogged', false)) showBanner('Sessão do Google expirada.', true);
     else showBanner('Entre com o Google para ver os livros do Drive.', true);
   } else if (!cfg.clientId) showBanner('Configure o Client ID do Google (⚙) para sincronizar com o Drive.', false);
