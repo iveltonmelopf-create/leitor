@@ -133,7 +133,7 @@ async function refreshLibrary() {
     files = (await listAll("trashed=false and (mimeType='application/pdf' or mimeType='application/epub+zip' or name contains '.epub' or name contains '.mobi' or name contains '.azw3')", fields)).filter(isBookFile);
   }
   const old = new Map(S.library.map(x => [x.id, x]));
-  const fromDrive = files.map(f => ({ id: f.id, name: f.name, mime: f.mimeType, size: +f.size || 0, mt: f.modifiedTime, cover: old.get(f.id)?.cover || null }));
+  const fromDrive = files.map(f => ({ id: f.id, name: f.name, mime: f.mimeType, size: +f.size || 0, mt: f.modifiedTime, cover: old.get(f.id)?.cover || null, noCover: old.get(f.id)?.noCover || false }));
   const locals = S.library.filter(x => x.local);
   S.library = [...fromDrive, ...locals]; saveState();
 }
@@ -177,22 +177,59 @@ function changed() { saveState(); if (cur) scheduleSync(cur.item.id); }
 document.addEventListener('visibilitychange', () => { if (document.hidden && cur) { saveState(); syncBook(cur.item.id); } });
 
 /* ---------- download de arquivos ---------- */
-async function getFileBuf(item) {
+async function getFileBuf(item, silent) {
   const cached = await idb.get('files', item.id);
   if (cached) return cached;
   if (!authed()) await signIn('');
-  toast('Baixando…', 60000);
+  if (!silent) toast('Baixando…', 60000);
   const r = await api('https://www.googleapis.com/drive/v3/files/' + item.id + '?alt=media');
   const total = +r.headers.get('content-length') || item.size || 0;
   const rd = r.body.getReader(); const chunks = []; let got = 0;
   for (; ;) {
     const { done, value } = await rd.read(); if (done) break;
     chunks.push(value); got += value.length;
-    if (total) toast('Baixando… ' + Math.round(got / total * 100) + '%', 60000);
+    if (total && !silent) toast('Baixando… ' + Math.round(got / total * 100) + '%', 60000);
   }
   const buf = await new Blob(chunks).arrayBuffer();
-  await idb.set('files', item.id, buf); dlCache.add(item.id); toast('Pronto', 800);
+  await idb.set('files', item.id, buf); dlCache.add(item.id); if (!silent) toast('Pronto', 800);
   return buf;
+}
+
+/* ---- capas em segundo plano ---- */
+const loadImg = src => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; });
+async function coverFromBuf(it, buf) {
+  if (kindOf(it) === 'pdf') {
+    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)) }).promise;
+    try {
+      const pg = await doc.getPage(1), vp = pg.getViewport({ scale: 220 / pg.getViewport({ scale: 1 }).width });
+      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+      await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      return c.toDataURL('image/jpeg', .7);
+    } finally { doc.destroy(); }
+  }
+  const epub = await getReadable(it, buf);            // MOBI/AZW3 viram EPUB (fica guardado para abrir rápido)
+  const book = ePub(epub, { openAs: 'binary' });
+  try { await book.ready; const u = await book.coverUrl(); return u ? thumbFrom(await loadImg(u)) : null; }
+  finally { try { book.destroy(); } catch { } }
+}
+let covering = false;
+async function genCovers() {
+  if (covering || !authed() || !navigator.onLine || navigator.connection?.saveData) return;
+  const todo = S.library.filter(x => !x.cover && !x.noCover && !x.local && (!x.size || x.size < 60e6));
+  if (!todo.length) return;
+  covering = true; let n = 0; toast('Buscando as capas dos livros (só na primeira vez)…', 4000);
+  try {
+    for (const it of todo) {
+      while (cur) await sleep(2500);                  // não atrapalha enquanto você lê
+      if (!authed()) break;
+      try {
+        const buf = await getFileBuf(it, true), cv = await coverFromBuf(it, buf);
+        if (cv) it.cover = cv; else it.noCover = true;
+      } catch (e) { console.warn('capa', it.name, e); if (e.message !== 'auth') it.noCover = true; else break; }
+      if (++n % 3 === 0) { saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); }
+      await sleep(200);
+    }
+  } finally { covering = false; saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); toast('Capas prontas', 1500); }
 }
 
 /* ---------- estante ---------- */
@@ -246,7 +283,7 @@ function cardMenu(it) {
 }
 async function doSync() {
   const b = $('#bSync'); b.classList.add('busy');
-  try { await refreshLibrary(); hideBanner(); renderLibrary(); toast(S.library.length + ' livros'); }
+  try { await refreshLibrary(); hideBanner(); renderLibrary(); toast(S.library.length + ' livros'); genCovers(); }
   catch (e) { showBanner(e.message === 'auth' ? 'Sessão expirada.' : e.message, true); }
   b.classList.remove('busy');
 }
