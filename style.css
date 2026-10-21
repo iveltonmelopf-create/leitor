@@ -213,3 +213,4 @@ html{color-scheme:dark}
 #night i{position:absolute;inset:0;opacity:0}
 #night .warm{background:#FFA45A;mix-blend-mode:multiply}
 #night .dim{background:#000}
+#pdfPage{vertical-align:top}

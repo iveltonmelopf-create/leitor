@@ -678,7 +678,8 @@ async function renderPdfPage() {
   const [cl, ct, cr, cb] = cropOf(cur.item.id);
   const cwPt = (cr - cl) * base.width, chPt = (cb - ct) * base.height;
   const availW = Math.max(60, wrap.clientWidth - 18), availH = Math.max(60, wrap.clientHeight - 16);
-  const fit = cfg.fit === 'page' ? Math.min(availW / cwPt, availH / chPt) : availW / cwPt;
+  const wide = availW > availH * 0.85;                // computador / tablet deitado
+  const fit = (cfg.fit === 'page' || (cfg.fit === 'crop' && wide)) ? Math.min(availW / cwPt, availH / chPt) : availW / cwPt;
   const cssScale = fit * pdfZoom;
   const vp = pg.getViewport({ scale: cssScale }), dpr = Math.min(window.devicePixelRatio || 1, 2.5);
   Object.assign(lay, { W: vp.width, H: vp.height, ox: cl * vp.width, oy: ct * vp.height, cw: (cr - cl) * vp.width, ch: (cb - ct) * vp.height });
@@ -799,6 +800,25 @@ $('#pdfWrap').addEventListener('click', e => {
   }, { passive: true });
 }
 
+/* ---- computador: roda do mouse, zoom, redimensionar ---- */
+{
+  let wt = 0, zt;
+  $('#pdfWrap').addEventListener('wheel', e => {
+    if (!cur || cur.kind !== 'pdf') return;
+    if (e.ctrlKey) {                                       // Ctrl + rolagem = zoom
+      e.preventDefault(); pdfZoom = Math.min(4, Math.max(.5, pdfZoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1))); cfg.zoom = +pdfZoom.toFixed(2);
+      clearTimeout(zt); zt = setTimeout(() => { saveCfg(); renderPdfPage(); }, 120); return;
+    }
+    const w = e.currentTarget;
+    if (w.scrollHeight > w.clientHeight + 12 || Math.abs(e.deltaY) < 20) return;   // página maior que a tela: rola normal
+    const t = now(); if (t - wt < 450) return; wt = t; e.preventDefault(); e.deltaY > 0 ? next() : prev();
+  }, { passive: false });
+  let rz; window.addEventListener('resize', () => {
+    if (!cur) return; clearTimeout(rz);
+    rz = setTimeout(() => { if (cur.kind === 'pdf') renderPdfPage(); else if (rend) { viewerInset(); reflow(); } }, 220);
+  });
+}
+
 /* ---- tinta (caneta) no PDF ---- */
 const ink = { tool: 'pen', color: INK_COLORS[1], size: 2, on: false, cur: null, undo: [] };
 const pageInk = () => getBook(cur.item.id).ink.filter(s => !s.del && s.page === pdfPageNum);
@@ -888,6 +908,14 @@ function keyNav(e) {
   if (!cur || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
   if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') next();
   else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prev();
+  else if (e.key === 'Home' || e.key === 'End') {
+    if (cur.kind === 'pdf') pdfGo(e.key === 'Home' ? 1 : pdf.numPages); else if (ebook?.locations.length()) rend.display(ebook.locations.cfiFromPercentage(e.key === 'Home' ? 0 : .999));
+  }
+  else if (e.key === '+' || e.key === '=' || e.key === '-') {
+    if (cur.kind === 'pdf') $(e.key === '-' ? '#zOut' : '#zIn').click();
+    else { cfg.fs = Math.min(300, Math.max(70, cfg.fs + (e.key === '-' ? -10 : 10))); saveCfg(); applyEpubLook(); }
+  }
+  else if (e.key === 'f' || e.key === 'F') toggleChrome();
   else if (e.key === 'Escape') { hideSheet(); closePanel(); closeModal(); }
 }
 document.addEventListener('keyup', keyNav);
@@ -947,11 +975,15 @@ function reflow() {
     try { rend.resize(); if (loc) rend.display(loc); } catch { }
   }, 280);
 }
+function viewerInset() {
+  const v = $('#viewer'), w = $('#stage').clientWidth, side = Math.max(w * (cfg.mg || 0) / 100, (w - 1240) / 2);
+  v.style.left = v.style.right = Math.round(side) + 'px';
+}
 function applyEpubLook(noReflow) {
   if (!rend) return;
   rend.themes.select(cfg.theme); rend.themes.fontSize(cfg.fs + '%');
   rend.getContents().forEach(applyUserCss);
-  $('#viewer').style.left = $('#viewer').style.right = cfg.mg + '%';
+  viewerInset();
   try { rend.spread(cfg.cols === '1' ? 'none' : 'auto'); } catch { }
   if (!noReflow) reflow();
 }
@@ -1003,7 +1035,7 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
     });
     slider('Tamanho (zoom)', 50, 300, 5, () => Math.round(pdfZoom * 100), v => { pdfZoom = v / 100; cfg.zoom = pdfZoom; saveCfg(); renderPdfPage(); }, v => v + '%');
     const h = document.createElement('div'); h.className = 'help';
-    h.innerHTML = 'PDF não reorganiza o texto: para letras maiores use <b>Sem margens</b> (corta o branco das bordas) e aumente o <b>zoom</b>. Dica: pinça com dois dedos também ajusta.'; body.appendChild(h);
+    h.innerHTML = 'PDF não reorganiza o texto: para letras maiores use <b>Sem margens</b> (corta o branco das bordas) e aumente o <b>zoom</b>. No celular, pinça com dois dedos também ajusta. No computador: roda do mouse vira a página, Ctrl + roda dá zoom, setas/Espaço viram página, + e − dão zoom, F esconde os botões.'; body.appendChild(h);
   }
   mk('Efeito de virar página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.flip !== false, v => { cfg.flip = v; saveCfg(); });
   const row = document.createElement('div'); row.className = 'row'; body.appendChild(row);
