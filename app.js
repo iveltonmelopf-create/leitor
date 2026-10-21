@@ -38,11 +38,11 @@ const idb = {
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } };
 
-let cfg = Object.assign({ clientId: '674620611576-d1gfmdv2t89kn9fia7rn4svli0s46m8l.apps.googleusercontent.com', folder: '', theme: 'light', fs: 110, flow: 'paginated', finger: false, zoom: 1 }, lsGet('cfg', {}));
+let cfg = Object.assign({ clientId: '674620611576-d1gfmdv2t89kn9fia7rn4svli0s46m8l.apps.googleusercontent.com', folder: '', theme: 'light', fs: 110, flow: 'paginated', finger: false, zoom: 1, fit: 'crop', lh: 0, ff: 'book', just: false, cols: 'auto', mg: 2 }, lsGet('cfg', {}));
 const saveCfg = () => lsSet('cfg', cfg);
 
 // S.library: [{id,name,mime,size,mt,cover,local}]  S.books[id]: {prog,hl,ink}  S.driveIds[id]: id do json no appData
-let S = { library: [], books: {}, driveIds: {} };
+let S = { library: [], books: {}, driveIds: {}, crops: {} };
 let dlCache = new Set(); // ids com arquivo baixado
 let saveT;
 function saveState() { clearTimeout(saveT); saveT = setTimeout(() => idb.set('kv', 'state', S).catch(() => { }), 400); }
@@ -266,7 +266,7 @@ function openSettings() {
 /* ================== LEITOR ================== */
 let cur = null;      // {item, kind, page}
 let rend = null, ebook = null;            // epub
-let pdf = null, pdfPageNum = 1, pdfZoom = 1, renderTok = 0; // pdf
+let pdf = null, pdfPageNum = 1, pdfZoom = 1, renderTok = 0, pinched = false; // pdf
 let pending = null;  // seleção pendente
 
 /* ---- MOBI / AZW3 → EPUB em memória (foliate-js lê o MOBI; o resto do app trata como EPUB) ---- */
@@ -344,7 +344,7 @@ async function openBook(item) {
   $('#rTitle').textContent = cleanName(item.name);
   $('#viewer').hidden = cur.kind !== 'epub'; $('#pdfWrap').hidden = cur.kind !== 'pdf';
   $('#rInk').hidden = cur.kind !== 'pdf'; $('#zoomBtns').hidden = cur.kind !== 'pdf';
-  setInk(false); hideSheet();
+  setInk(false); hideSheet(); $('#reader').classList.remove('imm'); $('#viewer').style.left = $('#viewer').style.right = '';
   let buf;
   try { buf = await getFileBuf(item); }
   catch (e) { toast(e.message === 'auth' ? 'Entre com o Google (⚙) para baixar.' : e.message); closeReader(); return; }
@@ -355,6 +355,7 @@ async function openBook(item) {
 
 async function closeReader() {
   hideSheet(); closePanel();
+  $('#reader').classList.remove('imm'); $('#viewer').style.left = $('#viewer').style.right = '';
   const id = cur?.item.id;
   try { rend?.destroy(); ebook?.destroy(); } catch { } rend = ebook = null;
   try { pdf?.destroy(); } catch { } pdf = null;
@@ -444,16 +445,13 @@ const EPUB_THEMES = {
   black: { body: { background: '#000000 !important', color: '#c8c8c8 !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#c8c8c8 !important' } },
   dark: { body: { background: '#111318 !important', color: '#d6d8de !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#d6d8de !important' } },
 };
-function applyEpubLook() {
-  if (!rend) return;
-  rend.themes.select(cfg.theme); rend.themes.fontSize(cfg.fs + '%');
-}
 async function openEpub(buf) {
   const id = cur.item.id, b = getBook(id);
   ebook = ePub(buf, { openAs: 'binary' });
   rend = ebook.renderTo($('#viewer'), { width: '100%', height: '100%', flow: cfg.flow, spread: 'auto', allowScriptedContent: false });
   for (const [n, r] of Object.entries(EPUB_THEMES)) rend.themes.register(n, r);
-  applyEpubLook();
+  rend.hooks.content.register(c => applyUserCss(c));
+  applyEpubLook(true);
   b.hl.filter(h => h.kind === 'epub' && !h.del).forEach(renderHl);
   rend.on('relocated', loc => {
     epubTurn();
@@ -469,6 +467,12 @@ async function openEpub(buf) {
   rend.on('touchend', e => {
     const dx = e.changedTouches[0].screenX - tx, dy = e.changedTouches[0].screenY - ty;
     if (cfg.flow === 'paginated' && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) dx < 0 ? next() : prev();
+  });
+  rend.on('click', e => {
+    if (e.target?.closest?.('a[href]')) return;
+    const s = e.view?.getSelection?.(); if (s && !s.isCollapsed) return;
+    const vr = $('#viewer').getBoundingClientRect(), fx = e.view?.frameElement ? e.view.frameElement.getBoundingClientRect().left : 0;
+    if (cfg.flow === 'paginated') zoneTap((fx + e.clientX - vr.left) / vr.width); else toggleChrome();
   });
   rend.on('keyup', keyNav);
   await rend.display(b.prog?.loc || undefined);
@@ -491,6 +495,7 @@ async function openPdf(buf) {
   const id = cur.item.id, b = getBook(id);
   pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)) }).promise;
   pdfZoom = cfg.zoom || 1;
+  if (cfg.fit === 'crop' && !S.crops?.[id]) { toast('Ajustando as margens do livro…', 8000); await pdfAutoCrop(); toast('Pronto', 600); }
   $('#slider').max = pdf.numPages; $('#slider').min = 1;
   pdfPageNum = Math.min(Math.max(b.prog?.page || 1, 1), pdf.numPages);
   await renderPdfPage();
@@ -502,15 +507,56 @@ async function openPdf(buf) {
     }).catch(() => { });
   }
 }
+const lay = { ox: 0, oy: 0, cw: 0, ch: 0, W: 0, H: 0 };
+const cropOf = id => (cfg.fit === 'crop' && S.crops?.[id]) || [0, 0, 1, 1];
+const quant = (arr, p) => { const a = [...arr].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.max(0, Math.round((a.length - 1) * p)))]; };
+// Descobre as margens em branco do livro olhando ~9 páginas; usa o mesmo corte em todas, para o texto não "pular" de tamanho.
+async function pdfAutoCrop(force) {
+  const id = cur.item.id; S.crops ||= {};
+  if (S.crops[id] && !force) return;
+  const n = pdf.numPages, from = n > 12 ? 3 : 1, to = n > 12 ? n - 2 : n, cnt = Math.min(9, to - from + 1), boxes = [];
+  for (let i = 0; i < cnt; i++) {
+    const p = Math.round(from + (to - from) * (cnt === 1 ? 0 : i / (cnt - 1)));
+    try {
+      const pg = await pdf.getPage(p), vp = pg.getViewport({ scale: 260 / pg.getViewport({ scale: 1 }).width });
+      const c = document.createElement('canvas'); c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+      const x = c.getContext('2d', { willReadFrequently: true }); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvasContext: x, viewport: vp }).promise;
+      const W = c.width, H = c.height, d = x.getImageData(0, 0, W, H).data;
+      const L = (px, py) => { const k = (py * W + px) * 4; return .299 * d[k] + .587 * d[k + 1] + .114 * d[k + 2]; };
+      const bg = (L(2, 2) + L(W - 3, 2) + L(2, H - 3) + L(W - 3, H - 3)) / 4;
+      const rows = new Uint16Array(H), cols = new Uint16Array(W);
+      for (let yy = 0; yy < H; yy++) for (let xx = 0; xx < W; xx++) if (Math.abs(L(xx, yy) - bg) > 45) { rows[yy]++; cols[xx]++; }
+      const first = a => a.findIndex(v => v >= 2), last = a => { for (let i = a.length - 1; i >= 0; i--) if (a[i] >= 2) return i; return -1; };
+      const t = first(rows), b = last(rows), l = first(cols), r = last(cols);
+      if (t >= 0 && l >= 0 && b > t && r > l) boxes.push([l / W, t / H, (r + 1) / W, (b + 1) / H]);
+    } catch { }
+  }
+  let crop = [0, 0, 1, 1];
+  if (boxes.length >= 2) {
+    const pad = .015;
+    const c = [Math.max(0, quant(boxes.map(b => b[0]), .2) - pad), Math.max(0, quant(boxes.map(b => b[1]), .2) - pad), Math.min(1, quant(boxes.map(b => b[2]), .8) + pad), Math.min(1, quant(boxes.map(b => b[3]), .8) + pad)];
+    if (c[2] - c[0] > .4 && c[3] - c[1] > .4) crop = c.map(v => +v.toFixed(4));
+  }
+  S.crops[id] = crop; saveState();
+}
 async function renderPdfPage() {
   if (!pdf || !cur) return;
   const tok = ++renderTok; cur.page = pdfPageNum;
   const pg = await pdf.getPage(pdfPageNum); if (tok !== renderTok || !pdf || !cur) return;
   const wrap = $('#pdfWrap'), base = pg.getViewport({ scale: 1 });
-  const cssScale = Math.max(50, wrap.clientWidth - 18) / base.width * pdfZoom;
+  const [cl, ct, cr, cb] = cropOf(cur.item.id);
+  const cwPt = (cr - cl) * base.width, chPt = (cb - ct) * base.height;
+  const availW = Math.max(60, wrap.clientWidth - 18), availH = Math.max(60, wrap.clientHeight - 16);
+  const fit = cfg.fit === 'page' ? Math.min(availW / cwPt, availH / chPt) : availW / cwPt;
+  const cssScale = fit * pdfZoom;
   const vp = pg.getViewport({ scale: cssScale }), dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-  const page = $('#pdfPage'); page.style.width = vp.width + 'px'; page.style.height = vp.height + 'px';
-  const cv = $('#pdfCv'); cv.width = vp.width * dpr; cv.height = vp.height * dpr; cv.style.width = '100%'; cv.style.height = '100%';
+  Object.assign(lay, { W: vp.width, H: vp.height, ox: cl * vp.width, oy: ct * vp.height, cw: (cr - cl) * vp.width, ch: (cb - ct) * vp.height });
+  const page = $('#pdfPage'), inner = $('#pdfInner');
+  page.style.width = lay.cw + 'px'; page.style.height = lay.ch + 'px';
+  page.style.overflow = (cl > 0 || ct > 0 || cr < 1 || cb < 1) ? 'hidden' : 'visible';
+  inner.style.width = vp.width + 'px'; inner.style.height = vp.height + 'px'; inner.style.left = -lay.ox + 'px'; inner.style.top = -lay.oy + 'px';
+  const cv = $('#pdfCv'); cv.width = vp.width * dpr; cv.height = vp.height * dpr;
   const r = pg.render({ canvasContext: cv.getContext('2d'), viewport: pg.getViewport({ scale: cssScale * dpr }) });
   const tl = $('#textLayer'); tl.innerHTML = ''; tl.style.setProperty('--scale-factor', cssScale);
   pg.getTextContent().then(tc => { if (tok !== renderTok) return; pdfjsLib.renderTextLayer({ textContentSource: tc, container: tl, viewport: vp, textDivs: [] }); });
@@ -527,8 +573,7 @@ function flipOverlay(dir) {
   snap.width = cv.width; snap.height = cv.height;
   const x = snap.getContext('2d'); x.drawImage(cv, 0, 0); if (ic.width) x.drawImage(ic, 0, 0, snap.width, snap.height);
   snap.className = 'flip';
-  snap.style.filter = getComputedStyle(cv).filter;
-  snap.style.transformOrigin = dir > 0 ? 'left center' : 'right center';
+  snap.style.cssText = `left:${-lay.ox}px;top:${-lay.oy}px;width:${lay.W}px;height:${lay.H}px;filter:${getComputedStyle(cv).filter};transform-origin:${dir > 0 ? lay.ox : lay.ox + lay.cw}px center`;
   page.appendChild(snap); return snap;
 }
 function playFlip(snap, dir) {
@@ -553,13 +598,13 @@ async function pdfGo(n) {
 }
 function pdfSelRects() {
   const s = getSelection(); if (!s || !s.rangeCount) return [];
-  const pr = $('#pdfPage').getBoundingClientRect(), W = pr.width;
+  const pr = $('#pdfInner').getBoundingClientRect(), W = pr.width;
   return [...s.getRangeAt(0).getClientRects()].filter(r => r.width > 1 && r.height > 1)
     .map(r => ({ x: +((r.left - pr.left) / W).toFixed(5), y: +((r.top - pr.top) / W).toFixed(5), w: +(r.width / W).toFixed(5), h: +(r.height / W).toFixed(5) }));
 }
 function drawPdfHl() {
   const L = $('#hlLayer'); L.innerHTML = ''; if (!cur || cur.kind !== 'pdf') return;
-  const W = $('#pdfPage').clientWidth;
+  const W = $('#pdfInner').clientWidth;
   for (const h of getBook(cur.item.id).hl) if (!h.del && h.kind === 'pdf' && h.page === pdfPageNum)
     for (const r of h.rects) { const d = document.createElement('div'); d.style.cssText = `left:${r.x * W}px;top:${r.y * W}px;width:${r.w * W}px;height:${r.h * W}px;background:${h.color}`; L.appendChild(d); }
 }
@@ -575,9 +620,9 @@ document.addEventListener('selectionchange', () => {
 // toque em destaque PDF para editar
 $('#textLayer').addEventListener('click', e => {
   const s = getSelection(); if (s && !s.isCollapsed) return;
-  const pr = $('#pdfPage').getBoundingClientRect(), x = (e.clientX - pr.left) / pr.width, y = (e.clientY - pr.top) / pr.width;
+  const pr = $('#pdfInner').getBoundingClientRect(), x = (e.clientX - pr.left) / pr.width, y = (e.clientY - pr.top) / pr.width;
   const h = getBook(cur.item.id).hl.find(h => !h.del && h.kind === 'pdf' && h.page === pdfPageNum && h.rects.some(r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h));
-  if (h) editHl(h.id);
+  if (h) { e.stopPropagation(); editHl(h.id); }
 });
 // deslizar para trocar de página (PDF)
 {
@@ -585,9 +630,42 @@ $('#textLayer').addEventListener('click', e => {
   const w = $('#pdfWrap');
   w.addEventListener('touchstart', e => { x0 = e.changedTouches[0].clientX; y0 = e.changedTouches[0].clientY; t0 = now(); }, { passive: true });
   w.addEventListener('touchend', e => {
-    if ($('#inkCv').classList.contains('on') || pdfZoom > 1.05) return;
+    if ($('#inkCv').classList.contains('on') || pdfZoom > 1.05 || pinched) return;
     const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
     if (now() - t0 < 600 && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 2 && getSelection().isCollapsed) pdfGo(pdfPageNum + (dx < 0 ? 1 : -1));
+  }, { passive: true });
+}
+
+/* ---- tela cheia (esconde as barras) e toques nas laterais ---- */
+function relayout() {
+  if (!cur) return;
+  if (cur.kind === 'pdf') renderPdfPage(); else { try { rend?.resize(); } catch { } }
+}
+function toggleChrome(force) {
+  const r = $('#reader'), on = force ?? !r.classList.contains('imm');
+  r.classList.toggle('imm', on);
+  if (on && !lsGet('immHint', false)) { lsSet('immHint', true); toast('Toque no centro da tela para mostrar os botões de novo', 3500); }
+  setTimeout(relayout, 80);
+}
+function zoneTap(x) { if (x < .28) prev(); else if (x > .72) next(); else toggleChrome(); }
+$('#rFull').onclick = () => toggleChrome(true);
+new MutationObserver(() => { $('#mini').textContent = $('#pos').textContent; }).observe($('#pos'), { childList: true, characterData: true, subtree: true });
+$('#pdfWrap').addEventListener('click', e => {
+  if (!cur || cur.kind !== 'pdf' || $('#inkCv').classList.contains('on')) return;
+  const s = getSelection(); if (s && !s.isCollapsed) return;
+  const r = e.currentTarget.getBoundingClientRect(); zoneTap((e.clientX - r.left) / r.width);
+});
+// pinça (dois dedos) para ajustar o zoom do PDF
+{
+  const w = $('#pdfWrap'); let d0 = 0, d1 = 0; const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  w.addEventListener('touchstart', e => { if (e.touches.length === 2) { d0 = d1 = dist(e.touches); pinched = true; } }, { passive: true });
+  w.addEventListener('touchmove', e => { if (e.touches.length === 2 && d0) d1 = dist(e.touches); }, { passive: true });
+  w.addEventListener('touchend', e => {
+    if (d0 && e.touches.length < 2) {
+      const f = d1 / d0; d0 = 0;
+      if (Math.abs(f - 1) > .08) { pdfZoom = Math.min(4, Math.max(.5, pdfZoom * f)); cfg.zoom = +pdfZoom.toFixed(2); saveCfg(); renderPdfPage(); }
+      setTimeout(() => pinched = false, 300);
+    }
   }, { passive: true });
 }
 
@@ -610,7 +688,7 @@ function drawInk() {
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
 }
 function setInk(on) {
-  ink.on = on; $('#inkbar').hidden = !on; $('#rInk').classList.toggle('on', on);
+  ink.on = on; if (on) $('#reader').classList.remove('imm'); $('#inkbar').hidden = !on; $('#rInk').classList.toggle('on', on);
   $('#inkCv').classList.toggle('on', on);
   if (on) hideSheet();
   document.querySelectorAll('#inkbar .tool').forEach(b => b.classList.toggle('on', b.dataset.tool === ink.tool));
@@ -715,17 +793,81 @@ $('#rToc').onclick = async () => {
     }
   });
 };
-$('#rSet').onclick = () => openPanel('Aparência', body => {
+const FONTS = { book: ['Do livro', ''], serif: ['Serifa', 'Georgia, "Times New Roman", serif'], sans: ['Sem serifa', 'system-ui, "Segoe UI", Roboto, Arial, sans-serif'], mono: ['Mono', 'ui-monospace, Consolas, monospace'] };
+function userCss() {
+  const d = [];
+  if (FONTS[cfg.ff]?.[1]) d.push('font-family:' + FONTS[cfg.ff][1] + ' !important');
+  if (cfg.lh) d.push('line-height:' + cfg.lh + ' !important');
+  if (cfg.just) d.push('text-align:justify !important');
+  return d.length ? 'html body, html body p, html body li, html body div, html body span, html body blockquote, html body td{' + d.join(';') + '}' : '';
+}
+function applyUserCss(contents) {
+  try {
+    const doc = contents.document; let st = doc.getElementById('u-style');
+    if (!st) { st = doc.createElement('style'); st.id = 'u-style'; doc.head.appendChild(st); }
+    st.textContent = userCss();
+  } catch { }
+}
+let reflowT;
+function reflow() {
+  clearTimeout(reflowT);
+  reflowT = setTimeout(() => {
+    if (!rend || !cur) return;
+    const loc = getBook(cur.item.id).prog?.loc;
+    try { rend.resize(); if (loc) rend.display(loc); } catch { }
+  }, 280);
+}
+function applyEpubLook(noReflow) {
+  if (!rend) return;
+  rend.themes.select(cfg.theme); rend.themes.fontSize(cfg.fs + '%');
+  rend.getContents().forEach(applyUserCss);
+  $('#viewer').style.left = $('#viewer').style.right = cfg.mg + '%';
+  try { rend.spread(cfg.cols === '1' ? 'none' : 'auto'); } catch { }
+  if (!noReflow) reflow();
+}
+$('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
   const mk = (label, opts, get, set) => {
     const l = document.createElement('label'); l.textContent = label; body.appendChild(l);
     const r = document.createElement('div'); r.className = 'row'; body.appendChild(r);
     opts.forEach(([v, t]) => { const b = document.createElement('button'); b.textContent = t; b.className = get() === v ? 'on' : ''; b.onclick = () => { set(v); [...r.children].forEach(c => c.classList.remove('on')); b.classList.add('on'); }; r.appendChild(b); });
   };
-  mk('Tema', [['light', 'Claro'], ['sepia', 'Sépia'], ['dark', 'Escuro'], ['black', 'Preto']], () => cfg.theme, v => { cfg.theme = v; saveCfg(); applyTheme(); applyEpubLook(); });
-  mk('Efeito de virar página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.flip !== false, v => { cfg.flip = v; saveCfg(); });
+  const slider = (label, min, max, step, get, set, fmt) => {
+    const l = document.createElement('label'); body.appendChild(l);
+    const row = document.createElement('div'); row.className = 'row srow'; body.appendChild(row);
+    const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+    const minus = document.createElement('button'), plus = document.createElement('button'); minus.textContent = '−'; plus.textContent = '+';
+    const show = () => l.textContent = label + ': ' + fmt(+inp.value);
+    const go = v => { inp.value = Math.min(max, Math.max(min, v)); show(); set(+inp.value); };
+    inp.oninput = () => go(+inp.value); minus.onclick = () => go(+inp.value - step); plus.onclick = () => go(+inp.value + step);
+    show(); row.append(minus, inp, plus);
+  };
+  mk('Fundo', [['light', 'Claro'], ['sepia', 'Sépia'], ['dark', 'Escuro'], ['black', 'Preto']], () => cfg.theme, v => { cfg.theme = v; saveCfg(); applyTheme(); applyEpubLook(true); });
   if (cur.kind === 'epub') {
-    mk('Tamanho do texto', [[90, 'A−−'], [100, 'A−'], [110, 'A'], [130, 'A+'], [160, 'A++'], [200, 'A+++']], () => cfg.fs, v => { cfg.fs = v; saveCfg(); applyEpubLook(); });
+    slider('Tamanho da letra', 70, 300, 5, () => cfg.fs, v => { cfg.fs = v; saveCfg(); applyEpubLook(); }, v => v + '%');
+    slider('Espaço entre linhas', 0, 2.4, .1, () => cfg.lh || 0, v => { cfg.lh = v < 1 ? 0 : +v.toFixed(1); saveCfg(); applyEpubLook(); }, v => v < 1 ? 'do livro' : v.toFixed(1));
+    slider('Margens laterais', 0, 25, 1, () => cfg.mg, v => { cfg.mg = v; saveCfg(); applyEpubLook(); }, v => v + '%');
+    mk('Fonte', Object.entries(FONTS).map(([k, [t]]) => [k, t]), () => cfg.ff, v => { cfg.ff = v; saveCfg(); applyEpubLook(); });
+    mk('Alinhamento', [[false, 'Padrão'], [true, 'Justificado']], () => !!cfg.just, v => { cfg.just = v; saveCfg(); applyEpubLook(); });
+    mk('Colunas (tela larga)', [['auto', 'Automático'], ['1', 'Uma só']], () => cfg.cols, v => { cfg.cols = v; saveCfg(); applyEpubLook(); });
     mk('Modo', [['paginated', 'Páginas'], ['scrolled-doc', 'Rolagem']], () => cfg.flow, v => { cfg.flow = v; saveCfg(); rend.flow(v); $('.edge.l').hidden = $('.edge.r').hidden = v !== 'paginated'; });
+  } else {
+    mk('Ajuste da página', [['crop', 'Sem margens'], ['width', 'Largura'], ['page', 'Página inteira']], () => cfg.fit, async v => {
+      cfg.fit = v; saveCfg();
+      if (v === 'crop' && !S.crops?.[cur.item.id]) { toast('Medindo as margens do livro…', 8000); await pdfAutoCrop(); toast('Pronto', 700); }
+      renderPdfPage();
+    });
+    slider('Tamanho (zoom)', 50, 300, 5, () => Math.round(pdfZoom * 100), v => { pdfZoom = v / 100; cfg.zoom = pdfZoom; saveCfg(); renderPdfPage(); }, v => v + '%');
+    const h = document.createElement('div'); h.className = 'help';
+    h.innerHTML = 'PDF não reorganiza o texto: para letras maiores use <b>Sem margens</b> (corta o branco das bordas) e aumente o <b>zoom</b>. Dica: pinça com dois dedos também ajusta.'; body.appendChild(h);
+  }
+  mk('Efeito de virar página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.flip !== false, v => { cfg.flip = v; saveCfg(); });
+  const row = document.createElement('div'); row.className = 'row'; body.appendChild(row);
+  const b1 = document.createElement('button'); b1.textContent = '⛶ Esconder botões'; b1.onclick = () => { closePanel(); toggleChrome(true); };
+  row.appendChild(b1);
+  if (document.documentElement.requestFullscreen) {
+    const b2 = document.createElement('button'); b2.textContent = '▣ Tela cheia do navegador';
+    b2.onclick = () => { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => { }); };
+    row.appendChild(b2);
   }
 });
 function applyTheme() { document.body.dataset.theme = cfg.theme; document.querySelector('meta[name=theme-color]').content = cfg.theme === 'black' ? '#000000' : cfg.theme === 'dark' ? '#0a0b0e' : '#1f2937'; }

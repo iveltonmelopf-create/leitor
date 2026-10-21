@@ -32,6 +32,7 @@
     <button id="rToc" title="Sumário">☰</button>
     <button id="rNotes" title="Destaques e notas">✎</button>
     <button id="rInk" title="Caneta" hidden>🖊</button>
+    <button id="rFull" title="Tela cheia (esconder botões)">⛶</button>
     <button id="rTheme" title="Trocar fundo (claro / sépia / escuro / preto)">◐</button>
     <button id="rSet" title="Aparência">Aa</button>
   </header>
@@ -49,13 +50,14 @@
   <div id="stage">
     <div id="viewer"></div>
     <div id="pdfWrap" hidden>
-      <div id="pdfPage">
+      <div id="pdfPage"><div id="pdfInner">
         <canvas id="pdfCv"></canvas>
         <div id="hlLayer"></div>
         <div id="textLayer"></div>
         <canvas id="inkCv"></canvas>
-      </div>
+      </div></div>
     </div>
+    <div id="mini"></div>
     <button class="edge l" id="prev">‹</button>
     <button class="edge r" id="next">›</button>
   </div>
