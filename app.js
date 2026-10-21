@@ -195,22 +195,83 @@ async function getFileBuf(item, silent) {
   return buf;
 }
 
-/* ---- capas em segundo plano ---- */
+/* ---- capas em segundo plano: lê só o pedaço do arquivo onde a capa está (HTTP Range), sem baixar o livro ---- */
 const loadImg = src => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; });
-async function coverFromBuf(it, buf) {
-  if (kindOf(it) === 'pdf') {
-    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)) }).promise;
-    try {
-      const pg = await doc.getPage(1), vp = pg.getViewport({ scale: 220 / pg.getViewport({ scale: 1 }).width });
-      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
-      await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
-      return c.toDataURL('image/jpeg', .7);
-    } finally { doc.destroy(); }
+const driveUrl = id => 'https://www.googleapis.com/drive/v3/files/' + id + '?alt=media';
+async function rangeGet(id, range) {             // range: 'bytes=a-b' ou 'bytes=-n'
+  const r = await api(driveUrl(id), { headers: { Range: range } });
+  if (r.status !== 206 && r.status !== 200) throw new Error('Range ' + r.status);
+  return { buf: new Uint8Array(await r.arrayBuffer()), partial: r.status === 206 };
+}
+const inflateRaw = async u8 => new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+async function zipEntries(it) {                  // lê só o índice (diretório central) do ZIP/EPUB
+  const size = it.size; if (!size) throw new Error('sem tamanho');
+  const t = await rangeGet(it.id, 'bytes=-' + Math.min(size, 65536)); if (!t.partial && size > 65536) throw new Error('sem Range');
+  const dv = new DataView(t.buf.buffer, t.buf.byteOffset, t.buf.byteLength);
+  let e = -1; for (let i = t.buf.length - 22; i >= 0; i--) if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error('zip inválido');
+  const cdSize = dv.getUint32(e + 12, true), cdOff = dv.getUint32(e + 16, true), tailStart = size - t.buf.length;
+  const cd = cdOff >= tailStart ? t.buf.subarray(cdOff - tailStart, cdOff - tailStart + cdSize) : (await rangeGet(it.id, 'bytes=' + cdOff + '-' + (cdOff + cdSize - 1))).buf;
+  const cdv = new DataView(cd.buffer, cd.byteOffset, cd.byteLength), dec = new TextDecoder(), map = new Map();
+  for (let p = 0; p + 46 <= cd.length && cdv.getUint32(p, true) === 0x02014b50;) {
+    const method = cdv.getUint16(p + 10, true), csize = cdv.getUint32(p + 20, true), n = cdv.getUint16(p + 28, true), x = cdv.getUint16(p + 30, true), c = cdv.getUint16(p + 32, true), off = cdv.getUint32(p + 42, true);
+    map.set(dec.decode(cd.subarray(p + 46, p + 46 + n)), { method, csize, off, n, x });
+    p += 46 + n + x + c;
   }
-  const epub = await getReadable(it, buf);            // MOBI/AZW3 viram EPUB (fica guardado para abrir rápido)
+  return map;
+}
+async function zipRead(it, ent) {
+  const { buf } = await rangeGet(it.id, 'bytes=' + ent.off + '-' + (ent.off + 30 + ent.n + ent.x + 2048 + ent.csize - 1));
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const start = 30 + dv.getUint16(26, true) + dv.getUint16(28, true), raw = buf.subarray(start, start + ent.csize);
+  return ent.method === 0 ? raw : await inflateRaw(raw);
+}
+async function epubCoverByRange(it) {
+  const map = await zipEntries(it), dec = new TextDecoder(), dp = new DOMParser();
+  const text = async name => dec.decode(await zipRead(it, map.get(name)));
+  if (!map.has('META-INF/container.xml')) return null;
+  const opfPath = dp.parseFromString(await text('META-INF/container.xml'), 'application/xml').querySelector('rootfile')?.getAttribute('full-path');
+  if (!opfPath || !map.has(opfPath)) return null;
+  const opf = dp.parseFromString(await text(opfPath), 'application/xml');
+  const items = [...opf.getElementsByTagName('item')], isImg = i => /^image\//.test(i.getAttribute('media-type') || '');
+  const metaId = [...opf.getElementsByTagName('meta')].find(m => m.getAttribute('name') === 'cover')?.getAttribute('content');
+  const ci = items.find(i => (i.getAttribute('properties') || '').split(/\s+/).includes('cover-image'))
+    || items.find(i => metaId && i.getAttribute('id') === metaId && isImg(i))
+    || items.find(i => isImg(i) && /cover|capa/i.test((i.getAttribute('id') || '') + (i.getAttribute('href') || '')));
+  if (!ci) return null;
+  const dir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+  const path = decodeURIComponent(new URL(ci.getAttribute('href'), 'http://x/' + dir).pathname.slice(1)), ent = map.get(path);
+  if (!ent) return null;
+  const url = URL.createObjectURL(new Blob([await zipRead(it, ent)], { type: ci.getAttribute('media-type') || 'image/jpeg' }));
+  try { return thumbFrom(await loadImg(url)); } finally { URL.revokeObjectURL(url); }
+}
+async function pdfThumb(doc) {
+  try {
+    const pg = await doc.getPage(1), vp = pg.getViewport({ scale: 220 / pg.getViewport({ scale: 1 }).width });
+    const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+    await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    return c.toDataURL('image/jpeg', .7);
+  } finally { doc.destroy(); }
+}
+const pdfCoverByRange = it => pdfjsLib.getDocument({ url: driveUrl(it.id), httpHeaders: { Authorization: 'Bearer ' + token }, rangeChunkSize: 131072, disableAutoFetch: true }).promise.then(pdfThumb);
+async function coverFromEpubBuf(epub) {
   const book = ePub(epub, { openAs: 'binary' });
   try { await book.ready; const u = await book.coverUrl(); return u ? thumbFrom(await loadImg(u)) : null; }
   finally { try { book.destroy(); } catch { } }
+}
+async function fastCover(it) {
+  const k = kindOf(it);
+  if (k === 'mobi') {                                      // MOBI/AZW3 são pequenos: baixa na memória, não guarda
+    const buf = await (await api(driveUrl(it.id))).arrayBuffer();
+    return coverFromEpubBuf(await mobiToEpub(buf));
+  }
+  try { return k === 'pdf' ? await pdfCoverByRange(it) : await epubCoverByRange(it); }
+  catch (e) {
+    if (e.message === 'auth' || !(it.size && it.size < 25e6)) throw e;   // sem Range: só baixa arquivos pequenos
+    console.warn('Range falhou, baixando', it.name, e.message);
+    const buf = await (await api(driveUrl(it.id))).arrayBuffer();
+    return k === 'pdf' ? await pdfThumb(await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise) : coverFromEpubBuf(buf);
+  }
 }
 let covering = false;
 async function genCovers(manual) {
@@ -220,19 +281,20 @@ async function genCovers(manual) {
   if (navigator.connection?.saveData && !manual) return;
   const todo = S.library.filter(x => !x.cover && !x.noCover && !x.local && (!x.size || x.size < 60e6));
   if (!todo.length) { if (manual) toast('Todos os livros já têm capa (ou não têm imagem de capa no arquivo).', 4000); return; }
-  covering = true; let n = 0, ok = 0, fail = 0, lastErr = ''; toast('Buscando as capas de ' + todo.length + ' livros (só na primeira vez)…', 4000);
-  try {
-    for (const it of todo) {
-      while (cur) await sleep(2500);                  // não atrapalha enquanto você lê
-      if (!authed()) break;
-      try {
-        const buf = await getFileBuf(it, true), cv = await coverFromBuf(it, buf);
-        if (cv) { it.cover = cv; ok++; } else { it.noCover = true; fail++; }
-      } catch (e) { console.warn('capa', it.name, e); lastErr = e.message; if (e.message !== 'auth') { it.noCover = true; fail++; } else break; }
-      if (++n % 3 === 0) { saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); }
-      await sleep(200);
+  covering = true; const queue = [...todo]; let done = 0, ok = 0, fail = 0, lastErr = '';
+  toast('Buscando as capas de ' + todo.length + ' livros (só um pedacinho de cada arquivo)…', 4000);
+  const worker = async () => {
+    while (queue.length) {
+      while (cur) await sleep(2500);                     // não atrapalha enquanto você lê
+      if (!authed()) return;
+      const it = queue.shift();
+      try { const cv = await fastCover(it); if (cv) { it.cover = cv; ok++; } else { it.noCover = true; fail++; } }
+      catch (e) { console.warn('capa', it.name, e); lastErr = e.message; if (e.message === 'auth') { queue.length = 0; return; } it.noCover = true; fail++; }
+      if (++done % 6 === 0) { saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); toast('Capas: ' + done + ' de ' + todo.length + '…', 1500); }
     }
-  } finally { covering = false; saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); toast('Capas: ' + ok + ' encontradas' + (fail ? ', ' + fail + ' sem capa' : '') + (lastErr ? ' (' + lastErr.slice(0, 60) + ')' : ''), 5000); }
+  };
+  try { await Promise.all([worker(), worker(), worker()]); }
+  finally { covering = false; saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); toast('Capas: ' + ok + ' encontradas' + (fail ? ', ' + fail + ' sem capa' : '') + (lastErr ? ' (' + lastErr.slice(0, 60) + ')' : ''), 6000); }
 }
 
 /* ---------- estante ---------- */
