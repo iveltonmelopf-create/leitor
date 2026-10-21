@@ -94,9 +94,9 @@ async function listAll(q, fields, spaces) {
   return out;
 }
 
-const isBookFile = f => /\.(epub|pdf)$/i.test(f.name) || f.mimeType === 'application/pdf' || f.mimeType === 'application/epub+zip';
-const kindOf = it => (/pdf/i.test(it.mime) || /\.pdf$/i.test(it.name)) ? 'pdf' : 'epub';
-const cleanName = n => n.replace(/\.(epub|pdf)$/i, '').replace(/[_]+/g, ' ');
+const isBookFile = f => /\.(epub|pdf|mobi|azw3?|prc)$/i.test(f.name) || f.mimeType === 'application/pdf' || f.mimeType === 'application/epub+zip';
+const kindOf = it => (/pdf/i.test(it.mime) || /\.pdf$/i.test(it.name)) ? 'pdf' : /\.(mobi|azw3?|prc)$/i.test(it.name) ? 'mobi' : 'epub';
+const cleanName = n => n.replace(/\.(epub|pdf|mobi|azw3?|prc)$/i, '').replace(/[_]+/g, ' ');
 
 async function refreshLibrary() {
   if (!authed()) await signIn('');
@@ -121,7 +121,7 @@ async function refreshLibrary() {
       }
     }
   } else {
-    files = (await listAll("trashed=false and (mimeType='application/pdf' or mimeType='application/epub+zip' or name contains '.epub')", fields)).filter(isBookFile);
+    files = (await listAll("trashed=false and (mimeType='application/pdf' or mimeType='application/epub+zip' or name contains '.epub' or name contains '.mobi' or name contains '.azw3')", fields)).filter(isBookFile);
   }
   const old = new Map(S.library.map(x => [x.id, x]));
   const fromDrive = files.map(f => ({ id: f.id, name: f.name, mime: f.mimeType, size: +f.size || 0, mt: f.modifiedTime, cover: old.get(f.id)?.cover || null }));
@@ -269,8 +269,77 @@ let rend = null, ebook = null;            // epub
 let pdf = null, pdfPageNum = 1, pdfZoom = 1, renderTok = 0; // pdf
 let pending = null;  // seleção pendente
 
+/* ---- MOBI / AZW3 → EPUB em memória (foliate-js lê o MOBI; o resto do app trata como EPUB) ---- */
+const RES_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/svg+xml': 'svg', 'image/webp': 'webp', 'text/css': 'css', 'font/ttf': 'ttf', 'font/otf': 'otf', 'font/woff': 'woff', 'font/woff2': 'woff2', 'application/font-woff': 'woff', 'application/vnd.ms-opentype': 'otf', 'application/x-font-truetype': 'ttf' };
+const xmlEsc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+async function mobiToEpub(buf) {
+  const { MOBI } = await import('./mobi.js');
+  const unzlib = async u8 => new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+  const book = await new MOBI({ unzlib }).open(new Blob([buf]));
+  const zip = new JSZip(), res = new Map();
+  let rn = 0;
+  // troca as URLs temporárias (blob:) por arquivos dentro do EPUB, para ele ficar completo e poder ser guardado
+  const embed = async (text, prefix) => {
+    for (const u of new Set(text.match(/blob:[^\s"'()<>]+/g) || [])) {
+      let r = res.get(u);
+      if (!r) {
+        const bl = await (await fetch(u)).blob();
+        r = { file: 'r' + (rn++) + '.' + (RES_EXT[bl.type] || 'bin'), type: bl.type || 'application/octet-stream' };
+        res.set(u, r);
+        zip.file('OEBPS/res/' + r.file, bl.type === 'text/css' ? await embed(await bl.text(), '') : bl);
+      }
+      text = text.split(u).join(prefix + r.file);
+    }
+    return text;
+  };
+  const secs = [];
+  for (let i = 0; i < book.sections.length; i++) {
+    const s = book.sections[i]; if (!s.load) continue;
+    const html = await embed(await (await fetch(await s.load())).text(), 'res/');
+    zip.file('OEBPS/s' + i + '.html', html); secs.push(i);
+  }
+  if (!secs.length) throw new Error('Livro vazio ou protegido por DRM.');
+  // sumário
+  const nav = [];
+  const walk = async (items, lvl) => {
+    for (const it of items || []) {
+      let idx = null; try { idx = (await book.resolveHref(it.href))?.index; } catch { }
+      nav.push({ label: String(it.label || '').trim() || 'Seção', idx: secs.includes(idx) ? idx : null, lvl });
+      if (it.subitems) await walk(it.subitems, lvl + 1);
+    }
+  };
+  try { await walk(book.toc, 0); } catch { }
+  const navItems = nav.filter(n => n.idx != null);
+  let cover = null; try { cover = await book.getCover?.(); } catch { }
+  if (cover) zip.file('OEBPS/cover.' + (RES_EXT[cover.type] || 'jpg'), cover);
+  const meta = book.metadata || {};
+  const items = [
+    ...secs.map(i => `<item id="s${i}" href="s${i}.html" media-type="application/xhtml+xml"/>`),
+    ...[...res.values()].map((r, k) => `<item id="r${k}" href="res/${r.file}" media-type="${xmlEsc(r.type)}"/>`),
+    '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
+    cover ? `<item id="cover-img" href="cover.${RES_EXT[cover.type] || 'jpg'}" media-type="${xmlEsc(cover.type || 'image/jpeg')}" properties="cover-image"/>` : ''
+  ].join('');
+  const author = [].concat(meta.author || []).join(', ');
+  zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
+  zip.file('META-INF/container.xml', '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
+  zip.file('OEBPS/content.opf', `<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">${xmlEsc(meta.identifier || 'mobi')}</dc:identifier><dc:title>${xmlEsc(meta.title || 'Livro')}</dc:title>${author ? '<dc:creator>' + xmlEsc(author) + '</dc:creator>' : ''}<dc:language>${xmlEsc(meta.language || 'pt')}</dc:language>${cover ? '<meta name="cover" content="cover-img"/>' : ''}</metadata><manifest>${items}</manifest><spine>${secs.map(i => `<itemref idref="s${i}"/>`).join('')}</spine></package>`);
+  zip.file('OEBPS/nav.xhtml', `<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Sumário</title></head><body><nav epub:type="toc"><ol>${(navItems.length ? navItems : secs.map(i => ({ label: 'Parte ' + (secs.indexOf(i) + 1), idx: i }))).map(n => `<li><a href="s${n.idx}.html">${xmlEsc(n.label)}</a></li>`).join('')}</ol></nav></body></html>`);
+  const out = await zip.generateAsync({ type: 'arraybuffer' });
+  try { book.destroy?.(); } catch { }
+  return out;
+}
+async function getReadable(item, buf) {   // devolve o EPUB convertido quando o livro é MOBI/AZW3
+  if (kindOf(item) !== 'mobi') return buf;
+  const key = 'conv1_' + item.id;
+  const cached = await idb.get('kv', key); if (cached) return cached;
+  toast('Convertendo o livro para leitura…', 60000);
+  const epub = await mobiToEpub(buf);
+  await idb.set('kv', key, epub); toast('Pronto', 700);
+  return epub;
+}
+
 async function openBook(item) {
-  cur = { item, kind: kindOf(item), page: 1 };
+  cur = { item, kind: kindOf(item) === 'pdf' ? 'pdf' : 'epub', page: 1 };
   $('#lib').hidden = true; $('#reader').hidden = false;
   $('#rTitle').textContent = cleanName(item.name);
   $('#viewer').hidden = cur.kind !== 'epub'; $('#pdfWrap').hidden = cur.kind !== 'pdf';
@@ -280,7 +349,7 @@ async function openBook(item) {
   try { buf = await getFileBuf(item); }
   catch (e) { toast(e.message === 'auth' ? 'Entre com o Google (⚙) para baixar.' : e.message); closeReader(); return; }
   if (authed() && navigator.onLine) await Promise.race([syncBook(item.id), sleep(4000)]);
-  try { cur.kind === 'pdf' ? await openPdf(buf) : await openEpub(buf); }
+  try { buf = await getReadable(item, buf); cur.kind === 'pdf' ? await openPdf(buf) : await openEpub(buf); }
   catch (e) { console.error(e); toast('Não consegui abrir: ' + e.message, 6000); closeReader(); }
 }
 
@@ -372,6 +441,7 @@ function openNotes() {
 const EPUB_THEMES = {
   light: { body: { background: '#ffffff !important', color: '#1f2937 !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#1f2937 !important' } },
   sepia: { body: { background: '#f4ecd8 !important', color: '#4b3b2a !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#4b3b2a !important' } },
+  black: { body: { background: '#000000 !important', color: '#c8c8c8 !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#c8c8c8 !important' } },
   dark: { body: { background: '#111318 !important', color: '#d6d8de !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#d6d8de !important' } },
 };
 function applyEpubLook() {
@@ -386,6 +456,7 @@ async function openEpub(buf) {
   applyEpubLook();
   b.hl.filter(h => h.kind === 'epub' && !h.del).forEach(renderHl);
   rend.on('relocated', loc => {
+    epubTurn();
     const pct = ebook.locations.length() ? ebook.locations.percentageFromCfi(loc.start.cfi) : (loc.start.percentage || 0);
     setProg({ loc: loc.start.cfi, pct });
     $('#slider').value = Math.round(pct * 1000); $('#pos').textContent = Math.round(pct * 100) + '%';
@@ -397,7 +468,7 @@ async function openEpub(buf) {
   rend.on('touchstart', e => { tx = e.changedTouches[0].screenX; ty = e.changedTouches[0].screenY; });
   rend.on('touchend', e => {
     const dx = e.changedTouches[0].screenX - tx, dy = e.changedTouches[0].screenY - ty;
-    if (cfg.flow === 'paginated' && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) dx < 0 ? rend.next() : rend.prev();
+    if (cfg.flow === 'paginated' && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) dx < 0 ? next() : prev();
   });
   rend.on('keyup', keyNav);
   await rend.display(b.prog?.loc || undefined);
@@ -432,8 +503,9 @@ async function openPdf(buf) {
   }
 }
 async function renderPdfPage() {
+  if (!pdf || !cur) return;
   const tok = ++renderTok; cur.page = pdfPageNum;
-  const pg = await pdf.getPage(pdfPageNum); if (tok !== renderTok) return;
+  const pg = await pdf.getPage(pdfPageNum); if (tok !== renderTok || !pdf || !cur) return;
   const wrap = $('#pdfWrap'), base = pg.getViewport({ scale: 1 });
   const cssScale = Math.max(50, wrap.clientWidth - 18) / base.width * pdfZoom;
   const vp = pg.getViewport({ scale: cssScale }), dpr = Math.min(window.devicePixelRatio || 1, 2.5);
@@ -446,10 +518,39 @@ async function renderPdfPage() {
   drawPdfHl(); drawInk();
   try { await r.promise; } catch { }
   wrap.scrollTop = 0;
+  if (!pdf || !cur) return;
   $('#slider').value = pdfPageNum; $('#pos').textContent = pdfPageNum + ' / ' + pdf.numPages;
   setProg({ page: pdfPageNum, pct: pdfPageNum / pdf.numPages });
 }
-function pdfGo(n) { n = Math.min(Math.max(1, n), pdf.numPages); if (n === pdfPageNum && $('#pdfCv').width) return; pdfPageNum = n; renderPdfPage(); }
+function flipOverlay(dir) {
+  const page = $('#pdfPage'), snap = document.createElement('canvas'), cv = $('#pdfCv'), ic = $('#inkCv');
+  snap.width = cv.width; snap.height = cv.height;
+  const x = snap.getContext('2d'); x.drawImage(cv, 0, 0); if (ic.width) x.drawImage(ic, 0, 0, snap.width, snap.height);
+  snap.className = 'flip';
+  snap.style.filter = getComputedStyle(cv).filter;
+  snap.style.transformOrigin = dir > 0 ? 'left center' : 'right center';
+  page.appendChild(snap); return snap;
+}
+function playFlip(snap, dir) {
+  const wrap = $('#pdfWrap'); wrap.style.overflow = 'hidden';
+  const to = dir > 0 ? -105 : 105;
+  const anim = snap.animate([
+    { transform: 'rotateY(0deg)', filter: snap.style.filter + ' brightness(1)', boxShadow: '0 0 0 #0000' },
+    { transform: 'rotateY(' + (to * .5) + 'deg)', filter: snap.style.filter + ' brightness(.75)', boxShadow: (dir > 0 ? '-' : '') + '24px 0 40px #0008', offset: .5 },
+    { transform: 'rotateY(' + to + 'deg)', filter: snap.style.filter + ' brightness(.5)', boxShadow: '0 0 0 #0000' }
+  ], { duration: 520, easing: 'cubic-bezier(.45,.05,.35,1)', fill: 'forwards' });
+  const done = () => { snap.remove(); wrap.style.overflow = ''; };
+  anim.onfinish = done; anim.oncancel = done;
+}
+async function pdfGo(n) {
+  n = Math.min(Math.max(1, n), pdf.numPages);
+  if (n === pdfPageNum && $('#pdfCv').width) return;
+  const dir = n > pdfPageNum ? 1 : -1;
+  const fx = cfg.flip !== false && Math.abs(n - pdfPageNum) === 1 && $('#pdfCv').width && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const snap = fx ? flipOverlay(dir) : null;
+  pdfPageNum = n; await renderPdfPage();
+  if (snap) playFlip(snap, dir);
+}
 function pdfSelRects() {
   const s = getSelection(); if (!s || !s.rangeCount) return [];
   const pr = $('#pdfPage').getBoundingClientRect(), W = pr.width;
@@ -566,8 +667,15 @@ function setInk(on) {
   }
 }
 /* ---- navegação / UI do leitor ---- */
-function next() { cur.kind === 'epub' ? rend?.next() : pdfGo(pdfPageNum + 1); }
-function prev() { cur.kind === 'epub' ? rend?.prev() : pdfGo(pdfPageNum - 1); }
+let turnDir = 0;
+function epubTurn() {
+  if (!turnDir || cfg.flip === false || cfg.flow !== 'paginated' || matchMedia('(prefers-reduced-motion: reduce)').matches) { turnDir = 0; return; }
+  const v = $('#viewer'), d = turnDir; turnDir = 0;
+  v.style.transformOrigin = d > 0 ? 'left center' : 'right center';
+  v.animate([{ transform: 'perspective(1800px) rotateY(' + (d > 0 ? 16 : -16) + 'deg)', opacity: .35 }, { transform: 'perspective(1800px) rotateY(0deg)', opacity: 1 }], { duration: 380, easing: 'cubic-bezier(.2,.7,.3,1)' });
+}
+function next() { if (cur.kind === 'epub') { turnDir = 1; rend?.next(); } else pdfGo(pdfPageNum + 1); }
+function prev() { if (cur.kind === 'epub') { turnDir = -1; rend?.prev(); } else pdfGo(pdfPageNum - 1); }
 function keyNav(e) {
   if (!cur || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
   if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') next();
@@ -613,13 +721,16 @@ $('#rSet').onclick = () => openPanel('Aparência', body => {
     const r = document.createElement('div'); r.className = 'row'; body.appendChild(r);
     opts.forEach(([v, t]) => { const b = document.createElement('button'); b.textContent = t; b.className = get() === v ? 'on' : ''; b.onclick = () => { set(v); [...r.children].forEach(c => c.classList.remove('on')); b.classList.add('on'); }; r.appendChild(b); });
   };
-  mk('Tema', [['light', 'Claro'], ['sepia', 'Sépia'], ['dark', 'Escuro']], () => cfg.theme, v => { cfg.theme = v; saveCfg(); applyTheme(); applyEpubLook(); });
+  mk('Tema', [['light', 'Claro'], ['sepia', 'Sépia'], ['dark', 'Escuro'], ['black', 'Preto']], () => cfg.theme, v => { cfg.theme = v; saveCfg(); applyTheme(); applyEpubLook(); });
+  mk('Efeito de virar página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.flip !== false, v => { cfg.flip = v; saveCfg(); });
   if (cur.kind === 'epub') {
     mk('Tamanho do texto', [[90, 'A−−'], [100, 'A−'], [110, 'A'], [130, 'A+'], [160, 'A++'], [200, 'A+++']], () => cfg.fs, v => { cfg.fs = v; saveCfg(); applyEpubLook(); });
     mk('Modo', [['paginated', 'Páginas'], ['scrolled-doc', 'Rolagem']], () => cfg.flow, v => { cfg.flow = v; saveCfg(); rend.flow(v); $('.edge.l').hidden = $('.edge.r').hidden = v !== 'paginated'; });
   }
 });
-function applyTheme() { document.body.dataset.theme = cfg.theme; document.querySelector('meta[name=theme-color]').content = cfg.theme === 'dark' ? '#0a0b0e' : '#1f2937'; }
+function applyTheme() { document.body.dataset.theme = cfg.theme; document.querySelector('meta[name=theme-color]').content = cfg.theme === 'black' ? '#000000' : cfg.theme === 'dark' ? '#0a0b0e' : '#1f2937'; }
+const THEMES = ['light', 'sepia', 'dark', 'black'];
+$('#rTheme').onclick = () => { cfg.theme = THEMES[(THEMES.indexOf(cfg.theme) + 1) % THEMES.length]; saveCfg(); applyTheme(); applyEpubLook(); toast({ light: 'Fundo claro', sepia: 'Fundo sépia', dark: 'Fundo escuro', black: 'Fundo preto' }[cfg.theme], 900); };
 
 /* ---- biblioteca: botões e arquivo local ---- */
 $('#q').addEventListener('input', renderLibrary);
