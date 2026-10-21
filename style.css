@@ -207,3 +207,9 @@ body[data-theme=black] #pdfPage{background:#000;box-shadow:none}
 }
 html{color-scheme:dark}
 *{scrollbar-color:var(--n3) transparent}
+
+/* conforto para os olhos: luz quente (multiplica, corta o azul) + escurecimento */
+#night{position:fixed;inset:0;pointer-events:none;z-index:200}
+#night i{position:absolute;inset:0;opacity:0}
+#night .warm{background:#FFA45A;mix-blend-mode:multiply}
+#night .dim{background:#000}

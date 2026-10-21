@@ -38,7 +38,7 @@ const idb = {
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } };
 
-let cfg = Object.assign({ clientId: '674620611576-d1gfmdv2t89kn9fia7rn4svli0s46m8l.apps.googleusercontent.com', folder: '', theme: 'dark', fs: 110, flow: 'paginated', finger: false, zoom: 1, fit: 'crop', lh: 0, ff: 'book', just: false, cols: 'auto', mg: 2 }, lsGet('cfg', {}));
+let cfg = Object.assign({ clientId: '674620611576-d1gfmdv2t89kn9fia7rn4svli0s46m8l.apps.googleusercontent.com', folder: '', theme: 'dark', fs: 110, flow: 'paginated', finger: false, zoom: 1, fit: 'crop', dim: 0, warm: 0, lh: 0, ff: 'book', just: false, cols: 'auto', mg: 2 }, lsGet('cfg', {}));
 const saveCfg = () => lsSet('cfg', cfg);
 
 // S.library: [{id,name,mime,size,mt,cover,local}]  S.books[id]: {prog,hl,ink}  S.driveIds[id]: id do json no appData
@@ -865,7 +865,22 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
     inp.oninput = () => go(+inp.value); minus.onclick = () => go(+inp.value - step); plus.onclick = () => go(+inp.value + step);
     show(); row.append(minus, inp, plus);
   };
-  mk('Fundo', [['light', 'Claro'], ['sepia', 'Sépia'], ['dark', 'Escuro'], ['black', 'Preto']], () => cfg.theme, v => { cfg.theme = v; saveCfg(); applyTheme(); applyEpubLook(true); });
+  mk('Fundo', [['light', 'Claro'], ['sepia', 'Sépia'], ['dark', 'Escuro'], ['black', 'Preto']], () => cfg.theme, v => { cfg.theme = v; saveCfg(); applyTheme(); applyEpubLook(true); setNightLabel(); });
+  const nb = document.createElement('div'); nb.className = 'row'; body.appendChild(nb);
+  const night = document.createElement('button'); nb.appendChild(night);
+  const setNightLabel = () => { night.textContent = isNightMode() ? 'Voltar ao modo dia' : 'Ativar modo noite'; night.className = isNightMode() ? 'on' : ''; };
+  setNightLabel();
+  const eyes = [];
+  const lbl = document.createElement('label'); lbl.textContent = 'Conforto para os olhos'; body.insertBefore(lbl, nb);
+  night.onclick = () => {
+    if (isNightMode()) { cfg.theme = cfg.dayTheme || 'sepia'; cfg.warm = 0; cfg.dim = 0; }
+    else { cfg.dayTheme = cfg.theme; cfg.theme = 'black'; cfg.warm = 35; cfg.dim = 15; }
+    saveCfg(); applyTheme(); applyNight(); applyEpubLook(true); closePanel(); setTimeout(() => $('#rSet').click(), 180);
+  };
+  slider('Brilho do app (escurecer)', 0, 70, 5, () => cfg.dim || 0, v => { cfg.dim = v; saveCfg(); applyNight(); setNightLabel(); }, v => v ? '−' + v + '%' : 'normal');
+  slider('Luz quente (menos azul)', 0, 100, 5, () => cfg.warm || 0, v => { cfg.warm = v; saveCfg(); applyNight(); setNightLabel(); }, v => v ? v + '%' : 'desligada');
+  const eh = document.createElement('div'); eh.className = 'help';
+  eh.textContent = 'À noite: fundo Preto + luz quente de 30% a 50% + brilho reduzido. O botão acima liga tudo de uma vez. Isso vale para o app inteiro e funciona junto com o brilho do celular.'; body.appendChild(eh);
   if (cur.kind === 'epub') {
     slider('Tamanho da letra', 70, 300, 5, () => cfg.fs, v => { cfg.fs = v; saveCfg(); applyEpubLook(); }, v => v + '%');
     slider('Espaço entre linhas', 0, 2.4, .1, () => cfg.lh || 0, v => { cfg.lh = v < 1 ? 0 : +v.toFixed(1); saveCfg(); applyEpubLook(); }, v => v < 1 ? 'do livro' : v.toFixed(1));
@@ -894,6 +909,11 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
     row.appendChild(b2);
   }
 });
+function applyNight() {
+  $('#night .dim').style.opacity = String(Math.min(70, Math.max(0, cfg.dim || 0)) / 100);
+  $('#night .warm').style.opacity = String(Math.min(100, Math.max(0, cfg.warm || 0)) / 100 * .8);
+}
+const isNightMode = () => cfg.theme === 'black' && (cfg.warm || 0) > 0;
 function applyTheme() { document.body.dataset.theme = cfg.theme; document.querySelector('meta[name=theme-color]').content = '#1C1D20'; }
 const THEMES = ['light', 'sepia', 'dark', 'black'];
 $('#rTheme').onclick = () => { cfg.theme = THEMES[(THEMES.indexOf(cfg.theme) + 1) % THEMES.length]; saveCfg(); applyTheme(); applyEpubLook(); toast({ light: 'Fundo claro', sepia: 'Fundo sépia', dark: 'Fundo escuro', black: 'Fundo preto' }[cfg.theme], 900); };
@@ -997,7 +1017,7 @@ window.addEventListener('online', () => { if (cur) syncBook(cur.item.id); });
   await idb.open();
   const st = await idb.get('kv', 'state'); if (st) S = Object.assign(S, st);
   (await idb.keys('files')).forEach(k => dlCache.add(k));
-  applyTheme(); renderLibrary();
+  applyTheme(); applyNight(); renderLibrary();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
   if (cfg.clientId && navigator.onLine) {
     if (authed()) doSync();
