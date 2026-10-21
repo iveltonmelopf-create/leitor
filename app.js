@@ -951,13 +951,28 @@ $('#rToc').onclick = async () => {
     }
   });
 };
-const FONTS = { book: ['Do livro', ''], serif: ['Serifa', 'Georgia, "Times New Roman", serif'], sans: ['Sem serifa', 'system-ui, "Segoe UI", Roboto, Arial, sans-serif'], mono: ['Mono', 'ui-monospace, Consolas, monospace'] };
+const FONTS = {
+  book: ['Do livro', ''],
+  literata: ['Literata', '"Literata", Georgia, serif'],
+  garamond: ['Garamond', '"EB Garamond", Georgia, serif'],
+  crimson: ['Crimson', '"Crimson Pro", Georgia, serif'],
+  merri: ['Merriweather', '"Merriweather", Georgia, serif'],
+  serif: ['Georgia', 'Georgia, "Times New Roman", serif'],
+  sans: ['Sem serifa', 'system-ui, "Segoe UI", Roboto, Arial, sans-serif'],
+};
+const FONT_FILES = { literata: ['Literata', 'literata'], garamond: ['EB Garamond', 'ebgaramond'], crimson: ['Crimson Pro', 'crimsonpro'], merri: ['Merriweather', 'merriweather'] };
+function fontFace(key) {                      // fontes embutidas no app, carregadas dentro da página do livro
+  const f = FONT_FILES[key]; if (!f) return '';
+  const u = n => new URL(n, location.href).href;
+  return '@font-face{font-family:"' + f[0] + '";src:url(' + u(f[1] + '-r.woff2') + ') format("woff2");font-weight:200 900;font-style:normal;font-display:swap}' +
+    '@font-face{font-family:"' + f[0] + '";src:url(' + u(f[1] + '-i.woff2') + ') format("woff2");font-weight:200 900;font-style:italic;font-display:swap}';
+}
 function userCss() {
   const d = [];
   if (FONTS[cfg.ff]?.[1]) d.push('font-family:' + FONTS[cfg.ff][1] + ' !important');
   if (cfg.lh) d.push('line-height:' + cfg.lh + ' !important');
   if (cfg.just) d.push('text-align:justify !important');
-  return d.length ? 'html body, html body p, html body li, html body div, html body span, html body blockquote, html body td{' + d.join(';') + '}' : '';
+  return (d.length ? fontFace(cfg.ff) : '') + (d.length ? 'html body, html body p, html body li, html body div, html body span, html body blockquote, html body td{' + d.join(';') + '}' : '');
 }
 function applyUserCss(contents) {
   try {
@@ -1023,7 +1038,7 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
     slider('Tamanho da letra', 70, 300, 5, () => cfg.fs, v => { cfg.fs = v; saveCfg(); applyEpubLook(); }, v => v + '%');
     slider('Espaço entre linhas', 0, 2.4, .1, () => cfg.lh || 0, v => { cfg.lh = v < 1 ? 0 : +v.toFixed(1); saveCfg(); applyEpubLook(); }, v => v < 1 ? 'do livro' : v.toFixed(1));
     slider('Margens laterais', 0, 25, 1, () => cfg.mg, v => { cfg.mg = v; saveCfg(); applyEpubLook(); }, v => v + '%');
-    mk('Fonte', Object.entries(FONTS).map(([k, [t]]) => [k, t]), () => cfg.ff, v => { cfg.ff = v; saveCfg(); applyEpubLook(); });
+    mk('Fonte (parecidas com livro)', Object.entries(FONTS).map(([k, [t]]) => [k, t]), () => cfg.ff, v => { cfg.ff = v; saveCfg(); applyEpubLook(); });
     mk('Alinhamento', [[false, 'Padrão'], [true, 'Justificado']], () => !!cfg.just, v => { cfg.just = v; saveCfg(); applyEpubLook(); });
     mk('Colunas (tela larga)', [['auto', 'Automático'], ['1', 'Uma só']], () => cfg.cols, v => { cfg.cols = v; saveCfg(); applyEpubLook(); });
     mk('Modo', [['paginated', 'Páginas'], ['scrolled-doc', 'Rolagem']], () => cfg.flow, v => { cfg.flow = v; saveCfg(); rend.flow(v); $('.edge.l').hidden = $('.edge.r').hidden = v !== 'paginated'; });
