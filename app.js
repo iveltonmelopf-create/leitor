@@ -1,6 +1,7 @@
 'use strict';
 /* Leitor EPUB/PDF — sincroniza progresso, destaques, notas e tinta via Google Drive (appDataFolder) */
 
+const DEFAULT_FOLDER = '1TbIk2RmluOSd3zmzXTJE7pnWDcZqZnyi'; // pasta oficial dos livros no Drive
 const SCOPES = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.appdata';
 const $ = s => document.querySelector(s);
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
@@ -101,9 +102,15 @@ async function refreshLibrary() {
   if (!authed()) await signIn('');
   let files = [];
   const fields = 'id,name,mimeType,size,modifiedTime,parents';
-  if (cfg.folder.trim()) {
-    const fol = await listAll("mimeType='application/vnd.google-apps.folder' and trashed=false and name='" + cfg.folder.trim().replace(/'/g, "\\'") + "'", 'id,name');
-    if (!fol.length) throw new Error('Pasta "' + cfg.folder + '" não encontrada no Drive.');
+  const fRaw = (cfg.folder || '').trim() || DEFAULT_FOLDER;
+  const fId = (fRaw.match(/folders\/([\w-]{15,})/) || fRaw.match(/^([\w-]{20,})$/) || [])[1];
+  if (fRaw) {
+    let fol;
+    if (fId) fol = [{ id: fId }];
+    else {
+      fol = await listAll("mimeType='application/vnd.google-apps.folder' and trashed=false and name='" + fRaw.replace(/'/g, "\'") + "'", 'id,name');
+      if (!fol.length) throw new Error('Pasta "' + fRaw + '" não encontrada no Drive.');
+    }
     const queue = fol.map(f => f.id), seen = new Set(queue);
     while (queue.length) {
       const id = queue.shift();
@@ -243,7 +250,7 @@ function openSettings() {
   openPanel('Configurações', body => {
     body.innerHTML = `
       <label>Client ID do Google (OAuth, tipo "Aplicativo da Web")</label><input id="sCid" type="text" placeholder="123456-abc.apps.googleusercontent.com">
-      <label>Pasta do Drive com os livros (opcional — vazio = todo o Drive)</label><input id="sFolder" type="text" placeholder="Livros">
+      <label>Pasta do Drive com os livros (nome, link ou ID — vazio = pasta oficial)</label><input id="sFolder" type="text" placeholder="Livros">
       <button class="primary" id="sSave">Salvar e entrar</button>
       <button id="sOut" style="margin:.2rem .4rem">Sair da conta neste aparelho</button>
       <div class="help">Aparência (tema, fonte, modo de rolagem) fica no botão <b>Aa</b> dentro do livro.<br>O progresso, os destaques, as notas e a tinta da caneta ficam na área privada do app no seu Drive (não aparecem nos seus arquivos).</div>`;
