@@ -38,7 +38,7 @@ const idb = {
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } };
 
-let cfg = Object.assign({ clientId: '674620611576-d1gfmdv2t89kn9fia7rn4svli0s46m8l.apps.googleusercontent.com', folder: '', theme: 'light', fs: 110, flow: 'paginated', finger: false, zoom: 1, fit: 'crop', lh: 0, ff: 'book', just: false, cols: 'auto', mg: 2 }, lsGet('cfg', {}));
+let cfg = Object.assign({ clientId: '674620611576-d1gfmdv2t89kn9fia7rn4svli0s46m8l.apps.googleusercontent.com', folder: '', theme: 'dark', fs: 110, flow: 'paginated', finger: false, zoom: 1, fit: 'crop', lh: 0, ff: 'book', just: false, cols: 'auto', mg: 2 }, lsGet('cfg', {}));
 const saveCfg = () => lsSet('cfg', cfg);
 
 // S.library: [{id,name,mime,size,mt,cover,local}]  S.books[id]: {prog,hl,ink}  S.driveIds[id]: id do json no appData
@@ -48,9 +48,18 @@ let saveT;
 function saveState() { clearTimeout(saveT); saveT = setTimeout(() => idb.set('kv', 'state', S).catch(() => { }), 400); }
 const getBook = id => (S.books[id] ||= { prog: null, hl: [], ink: [] });
 
+let lastPt = [50, 50];
+document.addEventListener('pointerdown', e => { lastPt = [e.clientX / innerWidth * 100, e.clientY / innerHeight * 100]; }, true);
+const REDUCED = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+function show(el) { clearTimeout(el._lt); el.classList.remove('out'); el.hidden = false; }
+function leave(el) {
+  if (el.hidden) return;
+  clearTimeout(el._lt); el.classList.add('out');
+  el._lt = setTimeout(() => { el.hidden = true; el.classList.remove('out'); }, REDUCED() ? 100 : 140);
+}
 function toast(msg, ms = 2800) {
-  const t = $('#toast'); t.textContent = msg; t.hidden = false;
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, ms);
+  const t = $('#toast'); t.textContent = msg; show(t);
+  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, ms);
 }
 
 /* ---------- login Google / Drive ---------- */
@@ -194,12 +203,24 @@ function renderLibrary() {
   list.sort((a, b) => ((getBook(b.id).prog?.t || 0) - (getBook(a.id).prog?.t || 0)) || a.name.localeCompare(b.name));
   if (!list.length) {
     grid.innerHTML = '<div class="empty">' + (S.library.length ? 'Nada encontrado.' :
-      (!cfg.clientId ? 'Para começar, abra as configurações (⚙) e cole o Client ID do Google.<br>Ou use ＋ para abrir um arquivo deste aparelho.<br><button id="eSet">Configurações</button>' :
-        'Sua estante está vazia.<br>Coloque EPUB/PDF no Google Drive e toque em ↻.<br><button id="eSync">Atualizar do Drive</button>')) + '</div>';
+      (!cfg.clientId ? 'Para começar, abra as configurações e cole o Client ID do Google.<br>Ou abra um arquivo deste aparelho pelo botão de adicionar.<br><button id="eSet">Configurações</button>' :
+        'Sua estante está vazia.<br>Coloque EPUB, PDF ou MOBI na pasta do Google Drive e atualize.<br><button id="eSync">Atualizar do Drive</button>')) + '</div>';
     $('#eSet')?.addEventListener('click', openSettings); $('#eSync')?.addEventListener('click', doSync);
     return;
   }
+  const hero = !q && getBook(list[0].id).prog?.t ? list[0] : null;
+  if (hero) {
+    const hp = Math.round((getBook(hero.id).prog?.pct || 0) * 100);
+    const h = document.createElement('div'); h.className = 'hero';
+    h.innerHTML = '<div class="cover"></div><div><div class="cap"></div><h2></h2><div class="prog"><i></i></div><button class="go">Continuar leitura</button></div>';
+    const hc = h.querySelector('.cover'); if (hero.cover) hc.style.backgroundImage = 'url(' + hero.cover + ')'; else hc.textContent = kindOf(hero).toUpperCase();
+    h.querySelector('.cap').textContent = 'Continuar de onde parou' + (hp ? ' · ' + hp + '%' : '');
+    h.querySelector('h2').textContent = cleanName(hero.name); h.querySelector('.prog i').style.width = hp + '%';
+    h.addEventListener('click', () => openBook(hero)); grid.appendChild(h);
+    if (list.length > 1) { const s = document.createElement('div'); s.className = 'sect'; s.textContent = 'Estante'; grid.appendChild(s); }
+  }
   for (const it of list) {
+    if (it === hero) continue;
     const b = getBook(it.id); const pct = Math.round((b.prog?.pct || 0) * 100);
     const d = document.createElement('div'); d.className = 'card';
     d.innerHTML = '<div class="cover"></div><div class="t"></div><div class="prog"><i></i></div>' + (dlCache.has(it.id) ? '<span class="badge">offline</span>' : '');
@@ -224,10 +245,10 @@ function cardMenu(it) {
   $('#mX').onclick = closeModal;
 }
 async function doSync() {
-  const b = $('#bSync'); b.textContent = '…';
+  const b = $('#bSync'); b.classList.add('busy');
   try { await refreshLibrary(); hideBanner(); renderLibrary(); toast(S.library.length + ' livros'); }
   catch (e) { showBanner(e.message === 'auth' ? 'Sessão expirada.' : e.message, true); }
-  b.textContent = '↻';
+  b.classList.remove('busy');
 }
 function showBanner(msg, withLogin) {
   const b = $('#banner'); b.hidden = false; b.innerHTML = '<span></span>' + (withLogin && cfg.clientId ? '<button id="bLogin">Entrar com Google</button>' : '');
@@ -238,13 +259,16 @@ const hideBanner = () => $('#banner').hidden = true;
 
 /* ---------- painéis / modal ---------- */
 function openPanel(title, build) {
-  const p = $('#panel'); p.innerHTML = '<h2><span></span><button id="pX">✕</button></h2><div class="body"></div>';
-  p.querySelector('h2 span').textContent = title; p.hidden = false;
-  $('#pX').onclick = () => p.hidden = true; build(p.querySelector('.body'));
+  const p = $('#panel'); p.innerHTML = '<h2><span></span><button id="pX" class="ic" aria-label="Fechar"><svg><use href="#i-x"/></svg></button></h2><div class="body"></div>';
+  p.querySelector('h2 span').textContent = title; p.style.setProperty('--oy', lastPt[1] + '%'); show(p);
+  $('#pX').onclick = closePanel; build(p.querySelector('.body'));
 }
-const closePanel = () => $('#panel').hidden = true;
-function modal(html) { const m = $('#modal'); m.innerHTML = html; m.hidden = false; m.onclick = e => { if (e.target === m) closeModal(); }; }
-const closeModal = () => $('#modal').hidden = true;
+const closePanel = () => leave($('#panel'));
+function modal(html) {
+  const m = $('#modal'); m.innerHTML = html; m.style.setProperty('--ox', lastPt[0] + '%'); m.style.setProperty('--oy', lastPt[1] + '%');
+  show(m); m.onclick = e => { if (e.target === m) closeModal(); };
+}
+const closeModal = () => leave($('#modal'));
 
 function openSettings() {
   openPanel('Configurações', body => {
@@ -428,7 +452,7 @@ function openNotes() {
       if (h.note) d.querySelector('.n').textContent = h.note;
       d.onclick = () => { closePanel(); h.kind === 'epub' ? rend.display(h.cfi) : pdfGo(h.page); };
       d.oncontextmenu = e => { e.preventDefault(); closePanel(); editHl(h.id); };
-      const ed = document.createElement('button'); ed.textContent = '✎ editar'; ed.style.cssText = 'font-size:.75rem;color:var(--acc);padding:.1rem 0';
+      const ed = document.createElement('button'); ed.textContent = 'Editar'; ed.className = 'ed';
       ed.onclick = e => { e.stopPropagation(); closePanel(); editHl(h.id); }; d.appendChild(ed);
       body.appendChild(d);
     }
@@ -440,10 +464,10 @@ function openNotes() {
 
 /* ---- EPUB ---- */
 const EPUB_THEMES = {
-  light: { body: { background: '#ffffff !important', color: '#1f2937 !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#1f2937 !important' } },
-  sepia: { body: { background: '#f4ecd8 !important', color: '#4b3b2a !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#4b3b2a !important' } },
-  black: { body: { background: '#000000 !important', color: '#c8c8c8 !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#c8c8c8 !important' } },
-  dark: { body: { background: '#111318 !important', color: '#d6d8de !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#d6d8de !important' } },
+  light: { body: { background: '#E8E8E6 !important', color: '#1C1D20 !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#1C1D20 !important' } },
+  sepia: { body: { background: '#E6DBC3 !important', color: '#4b3b2a !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#4b3b2a !important' } },
+  black: { body: { background: '#000000 !important', color: '#B5B7BA !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#B5B7BA !important' } },
+  dark: { body: { background: '#1C1D20 !important', color: '#C5C7CA !important' }, 'p,div,span,li,h1,h2,h3,h4,h5,h6,td': { color: '#C5C7CA !important' } },
 };
 async function openEpub(buf) {
   const id = cur.item.id, b = getBook(id);
@@ -583,7 +607,7 @@ function playFlip(snap, dir) {
     { transform: 'rotateY(0deg)', filter: snap.style.filter + ' brightness(1)', boxShadow: '0 0 0 #0000' },
     { transform: 'rotateY(' + (to * .5) + 'deg)', filter: snap.style.filter + ' brightness(.75)', boxShadow: (dir > 0 ? '-' : '') + '24px 0 40px #0008', offset: .5 },
     { transform: 'rotateY(' + to + 'deg)', filter: snap.style.filter + ' brightness(.5)', boxShadow: '0 0 0 #0000' }
-  ], { duration: 520, easing: 'cubic-bezier(.45,.05,.35,1)', fill: 'forwards' });
+  ], { duration: 380, easing: 'cubic-bezier(.45,.05,.35,1)', fill: 'forwards' });
   const done = () => { snap.remove(); wrap.style.overflow = ''; };
   anim.onfinish = done; anim.oncancel = done;
 }
@@ -862,15 +886,15 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
   }
   mk('Efeito de virar página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.flip !== false, v => { cfg.flip = v; saveCfg(); });
   const row = document.createElement('div'); row.className = 'row'; body.appendChild(row);
-  const b1 = document.createElement('button'); b1.textContent = '⛶ Esconder botões'; b1.onclick = () => { closePanel(); toggleChrome(true); };
+  const b1 = document.createElement('button'); b1.textContent = 'Esconder botões'; b1.onclick = () => { closePanel(); toggleChrome(true); };
   row.appendChild(b1);
   if (document.documentElement.requestFullscreen) {
-    const b2 = document.createElement('button'); b2.textContent = '▣ Tela cheia do navegador';
+    const b2 = document.createElement('button'); b2.textContent = 'Tela cheia do navegador';
     b2.onclick = () => { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => { }); };
     row.appendChild(b2);
   }
 });
-function applyTheme() { document.body.dataset.theme = cfg.theme; document.querySelector('meta[name=theme-color]').content = cfg.theme === 'black' ? '#000000' : cfg.theme === 'dark' ? '#0a0b0e' : '#1f2937'; }
+function applyTheme() { document.body.dataset.theme = cfg.theme; document.querySelector('meta[name=theme-color]').content = '#1C1D20'; }
 const THEMES = ['light', 'sepia', 'dark', 'black'];
 $('#rTheme').onclick = () => { cfg.theme = THEMES[(THEMES.indexOf(cfg.theme) + 1) % THEMES.length]; saveCfg(); applyTheme(); applyEpubLook(); toast({ light: 'Fundo claro', sepia: 'Fundo sépia', dark: 'Fundo escuro', black: 'Fundo preto' }[cfg.theme], 900); };
 
@@ -897,7 +921,7 @@ function coverEl(asin, title, big) {
   const d = document.createElement('div'), c = CAPAS[asin];
   d.className = big ? 'cvbig' : 'cv';
   if (!c) { d.textContent = title.charAt(0); return d; }
-  const k = big ? 1.5 : 1, col = c[1] % SPR.cols, row = Math.floor(c[1] / SPR.cols);
+  const k = big ? 2.25 : 1, col = c[1] % SPR.cols, row = Math.floor(c[1] / SPR.cols);
   d.style.backgroundImage = 'url(capas' + c[0] + '.jpg)';
   d.style.backgroundSize = (SPR.cols * 64 * k) + 'px auto';
   d.style.backgroundPosition = '-' + (col * 64 * k) + 'px -' + (row * 96 * k) + 'px';
@@ -916,7 +940,7 @@ function discItems() {
 }
 function renderDisc() {
   const cats = $('#dcats'); cats.innerHTML = '';
-  [['__all', 'Todas'], ['__fav', '♥ Favoritos (' + favs.size + ')'], ...DATA.map(d => [d[0], d[0]])].forEach(([id, t]) => {
+  [['__all', 'Todas'], ['__fav', 'Favoritos (' + favs.size + ')'], ...DATA.map(d => [d[0], d[0]])].forEach(([id, t]) => {
     const b = document.createElement('button'); b.textContent = t; b.className = dst.cat === id ? 'on' : '';
     b.onclick = () => { dst.cat = id; renderDisc(); $('#dlist').scrollTop = 0; }; cats.appendChild(b);
   });
@@ -925,7 +949,7 @@ function renderDisc() {
   const n = Math.min(items.length, dst.shown[key] || step);
   if (!items.length) {
     const e = document.createElement('div'); e.className = 'empty';
-    e.textContent = dst.cat === '__fav' ? 'Nenhum favorito ainda. Abra um livro e toque em ♥.' : 'Nada encontrado.'; list.appendChild(e);
+    e.textContent = dst.cat === '__fav' ? 'Nenhum favorito ainda. Abra um livro e toque em Favoritar.' : 'Nada encontrado.'; list.appendChild(e);
   }
   items.slice(0, n).forEach(({ cat, rank, b }) => {
     const row = document.createElement('div'); row.className = 'bk';
@@ -935,7 +959,7 @@ function renderDisc() {
     tt.appendChild(document.createTextNode(b[0]));
     const au = document.createElement('div'); au.className = 'au'; au.textContent = b[1];
     const rt = document.createElement('div'); rt.className = 'rt';
-    rt.textContent = [b[2] ? '★ ' + b[2] : '', favs.has(b[3]) ? '♥' : '', (dst.q || dst.cat === '__all' || dst.cat === '__fav') ? cat : ''].filter(Boolean).join(' · ');
+    rt.textContent = [b[2] ? 'Nota ' + b[2] : '', favs.has(b[3]) ? 'Favorito' : '', (dst.q || dst.cat === '__all' || dst.cat === '__fav') ? cat : ''].filter(Boolean).join(' · ');
     const ds = document.createElement('div'); ds.className = 'ds'; ds.textContent = b[4] || ((DET[b[3]] || [])[1]) || '';
     info.append(tt, au, rt, ds);
     row.append(coverEl(b[3], b[0]), info); row.onclick = () => discDetail(b[3]);
@@ -955,10 +979,10 @@ function discDetail(asin) {
   const desc = (DET[asin] || [])[1] || b[4] || 'Sem sinopse coletada.';
   modal('<div class="box"><div class="dh"><div id="mCv"></div><div style="flex:1;min-width:180px"><b id="mT"></b><div class="au" id="mA"></div><div class="rt" id="mR"></div><div class="rt" id="mP" style="margin-top:.4rem"></div></div></div><div class="dd" id="mD"></div><div class="row"><button id="mFav"></button><a class="btn" id="mAz" target="_blank" rel="noopener noreferrer">Ver na Amazon</a><span class="sp"></span><button id="mX">Fechar</button></div></div>');
   $('#mCv').appendChild(coverEl(asin, b[0], true));
-  $('#mT').textContent = b[0]; $('#mA').textContent = b[1]; $('#mR').textContent = b[2] ? '★ ' + b[2] : '';
+  $('#mT').textContent = b[0]; $('#mA').textContent = b[1]; $('#mR').textContent = b[2] ? 'Nota ' + b[2] : '';
   $('#mP').textContent = pos.join(' · '); $('#mD').textContent = desc;
   $('#mAz').href = 'https://www.amazon.com.br/dp/' + encodeURIComponent(asin);
-  const fb = $('#mFav'), setF = () => fb.textContent = favs.has(asin) ? '♥ Nos favoritos' : '♡ Favoritar';
+  const fb = $('#mFav'), setF = () => fb.textContent = favs.has(asin) ? 'Nos favoritos' : 'Favoritar';
   setF(); fb.onclick = () => { favs.has(asin) ? favs.delete(asin) : favs.add(asin); lsSet('favs', [...favs]); setF(); renderDisc(); };
   $('#mX').onclick = closeModal;
 }
