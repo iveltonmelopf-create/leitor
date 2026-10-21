@@ -87,3 +87,21 @@ body[data-theme=sepia] #pdfCv{filter:sepia(.35)}
 #modal .ok{background:var(--acc);color:#fff}
 #modal .danger{color:#dc2626}
 #toast{position:fixed;left:50%;bottom:4.5rem;transform:translateX(-50%);background:#000d;color:#fff;padding:.55rem 1rem;border-radius:20px;z-index:80;font-size:.88rem;max-width:90vw}
+
+/* Descobrir (catálogo dos mais vendidos) */
+#dcats{display:flex;gap:.4rem;overflow-x:auto;padding:.5rem .7rem;background:var(--card);border-bottom:1px solid var(--line);flex:none}
+#dcats button{flex:none;white-space:nowrap;border:1px solid var(--line);border-radius:99px;padding:.3rem .8rem;font-size:.85rem;background:var(--bg)}
+#dcats button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+#dlist{flex:1;overflow:auto;padding:.5rem .7rem 2rem}
+.bk{display:grid;grid-template-columns:64px 1fr;gap:.2rem .8rem;padding:.7rem 0;border-bottom:1px solid var(--line);cursor:pointer}
+.bk .cv{width:64px;height:96px;aspect-ratio:auto;border-radius:4px;background-color:var(--card);box-shadow:0 1px 4px #0004;font-size:1.6rem}
+.bk .tt{font-weight:600;line-height:1.25}
+.bk .au{color:var(--mut);font-size:.85rem}
+.bk .rt{font-size:.8rem;color:var(--mut)}
+.bk .ds{font-size:.85rem;opacity:.85;margin-top:.25rem;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.bk .rk{color:var(--acc);font-weight:700;margin-right:.3rem}
+#dlist .more{text-align:center;padding:1rem}#dlist .more button{background:var(--card);margin:.2rem}
+.cvbig{width:144px;height:216px;border-radius:5px;background-color:var(--card);box-shadow:0 2px 10px #0005;flex:none;display:flex;align-items:center;justify-content:center;font-size:2.4rem;font-weight:700;color:var(--mut)}
+#modal .dh{display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap}
+#modal .dd{max-height:40vh;overflow:auto;line-height:1.5;font-size:.92rem}
+#modal a.btn{display:inline-block;padding:.45rem .8rem;border-radius:8px;background:var(--card);color:var(--fg);text-decoration:none}

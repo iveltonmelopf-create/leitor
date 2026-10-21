@@ -15,6 +15,7 @@
   <header class="bar">
     <h1>Minha estante</h1>
     <input id="q" type="search" placeholder="Buscar livro">
+    <button id="bDisc" title="Descobrir livros (mais vendidos)">📖</button>
     <button id="bSync" title="Atualizar do Drive">↻</button>
     <button id="bLocal" title="Abrir arquivo deste aparelho">＋</button>
     <button id="bSet" title="Configurações">⚙</button>
@@ -70,6 +71,16 @@
   </div>
 </div>
 
+<div id="disc" class="screen" hidden>
+  <header class="bar">
+    <button id="dBack" title="Voltar">←</button>
+    <h1>Descobrir</h1>
+    <input id="dq" type="search" placeholder="Título, autor ou assunto">
+  </header>
+  <div id="dcats"></div>
+  <main id="dlist"></main>
+</div>
+
 <aside id="panel" hidden></aside>
 <div id="modal" hidden></div>
 <div id="toast" hidden></div>
@@ -77,6 +88,7 @@
 <script src="jszip.min.js"></script>
 <script src="epub.min.js"></script>
 <script src="pdf.min.js"></script>
+<script src="catalogo.js"></script>
 <script src="app.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer onload="window.gisReady&&window.gisReady()"></script>
 </body>

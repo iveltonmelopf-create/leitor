@@ -636,6 +636,83 @@ $('#fileIn').onchange = async e => {
   openBook(S.library.find(x => x.id === id));
 };
 
+/* ================== DESCOBRIR (catálogo Amazon BR) ================== */
+const SPR = { cols: 10, w: 96, h: 144 };
+const favs = new Set(lsGet('favs', []));
+const dst = { cat: '__all', q: '', shown: {} };
+function coverEl(asin, title, big) {
+  const d = document.createElement('div'), c = CAPAS[asin];
+  d.className = big ? 'cvbig' : 'cv';
+  if (!c) { d.textContent = title.charAt(0); return d; }
+  const k = big ? 1.5 : 1, col = c[1] % SPR.cols, row = Math.floor(c[1] / SPR.cols);
+  d.style.backgroundImage = 'url(capas' + c[0] + '.jpg)';
+  d.style.backgroundSize = (SPR.cols * 64 * k) + 'px auto';
+  d.style.backgroundPosition = '-' + (col * 64 * k) + 'px -' + (row * 96 * k) + 'px';
+  d.setAttribute('role', 'img'); d.setAttribute('aria-label', 'Capa de ' + title);
+  return d;
+}
+function discItems() {
+  const q = dst.q.trim().toLowerCase(), out = [], seen = new Set();
+  DATA.forEach(([cat, bs]) => bs.forEach((b, i) => {
+    if (dst.cat === '__fav' ? !favs.has(b[3]) : (!q && dst.cat !== '__all' && dst.cat !== cat)) return;
+    if (q && !(b[0] + ' ' + b[1] + ' ' + b[4] + ' ' + ((DET[b[3]] || [])[1] || '')).toLowerCase().includes(q)) return;
+    if ((q || dst.cat === '__fav' || dst.cat === '__all') && seen.has(b[3])) return;
+    seen.add(b[3]); out.push({ cat, rank: i + 1, b });
+  }));
+  return out;
+}
+function renderDisc() {
+  const cats = $('#dcats'); cats.innerHTML = '';
+  [['__all', 'Todas'], ['__fav', '♥ Favoritos (' + favs.size + ')'], ...DATA.map(d => [d[0], d[0]])].forEach(([id, t]) => {
+    const b = document.createElement('button'); b.textContent = t; b.className = dst.cat === id ? 'on' : '';
+    b.onclick = () => { dst.cat = id; renderDisc(); $('#dlist').scrollTop = 0; }; cats.appendChild(b);
+  });
+  const list = $('#dlist'); list.innerHTML = '';
+  const items = discItems(), key = dst.cat + '|' + dst.q, step = 20;
+  const n = Math.min(items.length, dst.shown[key] || step);
+  if (!items.length) {
+    const e = document.createElement('div'); e.className = 'empty';
+    e.textContent = dst.cat === '__fav' ? 'Nenhum favorito ainda. Abra um livro e toque em ♥.' : 'Nada encontrado.'; list.appendChild(e);
+  }
+  items.slice(0, n).forEach(({ cat, rank, b }) => {
+    const row = document.createElement('div'); row.className = 'bk';
+    const info = document.createElement('div');
+    const tt = document.createElement('div'); tt.className = 'tt';
+    if (dst.cat !== '__fav' && !dst.q) { const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = '#' + rank; tt.appendChild(rk); }
+    tt.appendChild(document.createTextNode(b[0]));
+    const au = document.createElement('div'); au.className = 'au'; au.textContent = b[1];
+    const rt = document.createElement('div'); rt.className = 'rt';
+    rt.textContent = [b[2] ? '★ ' + b[2] : '', favs.has(b[3]) ? '♥' : '', (dst.q || dst.cat === '__all' || dst.cat === '__fav') ? cat : ''].filter(Boolean).join(' · ');
+    const ds = document.createElement('div'); ds.className = 'ds'; ds.textContent = b[4] || ((DET[b[3]] || [])[1]) || '';
+    info.append(tt, au, rt, ds);
+    row.append(coverEl(b[3], b[0]), info); row.onclick = () => discDetail(b[3]);
+    list.appendChild(row);
+  });
+  if (n < items.length) {
+    const m = document.createElement('div'); m.className = 'more';
+    const b1 = document.createElement('button'); b1.textContent = 'Mostrar mais ' + step; b1.onclick = () => { dst.shown[key] = n + step; renderDisc(); };
+    const b2 = document.createElement('button'); b2.textContent = 'Mostrar todos (' + items.length + ')'; b2.onclick = () => { dst.shown[key] = items.length; renderDisc(); };
+    m.append(b1, b2); list.appendChild(m);
+  }
+}
+function discDetail(asin) {
+  const pos = []; let b = null;
+  DATA.forEach(([c, bs]) => bs.forEach((x, i) => { if (x[3] === asin) { b = b || x; pos.push('#' + (i + 1) + ' em ' + c); } }));
+  if (!b) return;
+  const desc = (DET[asin] || [])[1] || b[4] || 'Sem sinopse coletada.';
+  modal('<div class="box"><div class="dh"><div id="mCv"></div><div style="flex:1;min-width:180px"><b id="mT"></b><div class="au" id="mA"></div><div class="rt" id="mR"></div><div class="rt" id="mP" style="margin-top:.4rem"></div></div></div><div class="dd" id="mD"></div><div class="row"><button id="mFav"></button><a class="btn" id="mAz" target="_blank" rel="noopener noreferrer">Ver na Amazon</a><span class="sp"></span><button id="mX">Fechar</button></div></div>');
+  $('#mCv').appendChild(coverEl(asin, b[0], true));
+  $('#mT').textContent = b[0]; $('#mA').textContent = b[1]; $('#mR').textContent = b[2] ? '★ ' + b[2] : '';
+  $('#mP').textContent = pos.join(' · '); $('#mD').textContent = desc;
+  $('#mAz').href = 'https://www.amazon.com.br/dp/' + encodeURIComponent(asin);
+  const fb = $('#mFav'), setF = () => fb.textContent = favs.has(asin) ? '♥ Nos favoritos' : '♡ Favoritar';
+  setF(); fb.onclick = () => { favs.has(asin) ? favs.delete(asin) : favs.add(asin); lsSet('favs', [...favs]); setF(); renderDisc(); };
+  $('#mX').onclick = closeModal;
+}
+$('#bDisc').onclick = () => { $('#lib').hidden = true; $('#disc').hidden = false; renderDisc(); };
+$('#dBack').onclick = () => { $('#disc').hidden = true; $('#lib').hidden = false; };
+$('#dq').addEventListener('input', e => { dst.q = e.target.value; renderDisc(); });
+
 /* ---- iniciar ---- */
 window.gisReady = () => { if (lsGet('wasLogged', false) && !authed() && cfg.clientId && !S.library.length) showBanner('Toque para entrar de novo.', true); };
 window.addEventListener('online', () => { if (cur) syncBook(cur.item.id); });
