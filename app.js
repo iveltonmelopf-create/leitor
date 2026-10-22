@@ -517,7 +517,8 @@ async function bookDetail(it) {
   $('#bdGo').onclick = () => { closeModal(); openBook(it); };
   $('#bdCat').onclick = () => catPicker(it);
   $('#bdX').onclick = closeModal;
-  const set = t => { const d = $('#bdD'); if (d) d.textContent = t; };
+  if (!it.cover && !it.noCover && authed() && !it.local && (!it.size || it.size < 60e6)) fastCover(it).then(c => { if (c) { it.cover = c; const e = $('#bdCv'); if (e) { e.style.backgroundImage = 'url(' + c + ')'; e.textContent = ''; } saveState(); } }).catch(() => { });
+  const set = t => { const d = $('#bdD'); if (d) d.textContent = String(t).replace(/([^\n])\n(?!\n)/g, '$1 '); };   // junta quebras de linha soltas do texto original
   const show = m => { set(m.d); const r = $('#bdR'); if (r && (m.y || m.p)) r.textContent += (r.textContent ? ' · ' : '') + [m.y, m.p ? m.p + ' páginas' : ''].filter(Boolean).join(' · '); };
   const cached = await idb.get('kv', 'syn_' + it.id).catch(() => null);
   if (cached) return show(cached);
