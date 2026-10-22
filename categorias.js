@@ -1,0 +1,86 @@
+/* Categorias dos livros: classificador automático (título + autor) + mapa pré-calculado (catmap.js) */
+const CATS = [
+  ['neg', 'Negócios'], ['fin', 'Finanças e investimentos'], ['dev', 'Desenvolvimento pessoal'], ['psi', 'Psicologia'],
+  ['sau', 'Saúde e bem-estar'], ['esp', 'Espiritualidade e religião'], ['fil', 'Filosofia'], ['his', 'História'],
+  ['pol', 'Política e sociedade'], ['cie', 'Ciência e tecnologia'], ['bio', 'Biografias'], ['rom', 'Romance'],
+  ['fan', 'Fantasia e ficção científica'], ['sus', 'Suspense e terror'], ['lit', 'Literatura e clássicos'],
+  ['inf', 'Infantojuvenil e HQs'], ['edu', 'Educação e referência'], ['art', 'Arte, cultura e lazer'], ['out', 'Outros']
+];
+const CAT_NAME = Object.fromEntries(CATS);
+const CAT_VERSION = 1;
+const catNorm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+function catKey(name) {                      // chave curta do nome do livro (sem extensão): igual em todos os aparelhos
+  const s = catNorm(String(name).replace(/\.(epub|pdf|mobi|azw3?|prc)$/i, '')); let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36);
+}
+// autores conhecidos (decisivo)
+const CAT_AUTHORS = {
+  sus: ['stephen king', 'agatha christie', 'dan brown', 'freida mcfadden', 'harlan coben', 'john grisham', 'sidney sheldon', 'gillian flynn', 'riley sager', 'raphael montes', 'conan doyle', 'lee child', 'jo nesbo', 'stieg larsson', 'alice feeney', 'h p lovecraft', 'edgar allan poe', 'patricia highsmith', 'dennis lehane', 'karin slaughter', 'sophie stava'],
+  fan: ['rebecca yarros', 'sarah j maas', 'j r r tolkien', 'tolkien', 'j k rowling', 'george r r martin', 'brandon sanderson', 'isaac asimov', 'arthur c clarke', 'frank herbert', 'c s lewis', 'neil gaiman', 'rick riordan', 'andrzej sapkowski', 'ursula k le guin', 'philip k dick', 'douglas adams', 'kristen ciccarelli', 'sarah a parker', 'cristina bomfim', 'stephanie garber', 'leigh bardugo', 'cassandra clare', 'suzanne collins', 'veronica roth'],
+  rom: ['colleen hoover', 'nicholas sparks', 'lynn painter', 'ali hazelwood', 'jojo moyes', 'emily henry', 'sylvia day', 'e l james', 'sally thorne', 'meg cabot', 'jane austen', 'julia quinn', 'elle kennedy', 'abbi glines', 'ana huang', 'tessa bailey'],
+  dev: ['napoleon hill', 'dale carnegie', 'james clear', 'harv eker', 'tony robbins', 'stephen r covey', 'stephen covey', 'robin sharma', 'jordan peterson', 'mel robbins', 'mark manson', 'augusto cury', 'og mandino', 'brian tracy', 'zig ziglar', 'napoleon', 'joe dispenza', 'eckhart tolle', 'susan jeffers', 'carol dweck', 'cal newport', 'ryan holiday', 'gary chapman', 'brene brown'],
+  fin: ['robert kiyosaki', 'morgan housel', 'benjamin graham', 'ray dalio', 'gustavo cerbasi', 'nathalia arcuri', 'thiago nigro', 'primo rico', 'warren buffett', 'peter lynch', 'george s clason', 'tiago reis', 'bruno perini', 'luiz barsi', 'carlos alberto sardenberg', 'tony robbins dinheiro'],
+  neg: ['peter thiel', 'eric ries', 'simon sinek', 'jim collins', 'clayton christensen', 'chris voss', 'jeff bezos', 'sun tzu', 'philip kotler', 'seth godin', 'chris anderson', 'ben horowitz', 'reid hoffman', 'patrick lencioni', 'ram charan', 'geoffrey moore', 'steven pressfield', 'alex osterwalder', 'jack welch', 'dave ramsey negocios', 'flavio augusto', 'geraldo rufino'],
+  psi: ['sigmund freud', 'carl jung', 'daniel kahneman', 'viktor frankl', 'daniel goleman', 'oliver sacks', 'irvin yalom', 'steven pinker', 'martin seligman', 'jonathan haidt', 'david eagleman', 'robert cialdini', 'philip zimbardo', 'lacan', 'winnicott', 'bessel van der kolk', 'gabor mate', 'nise da silveira'],
+  fil: ['friedrich nietzsche', 'nietzsche', 'marco aurelio', 'seneca', 'epicteto', 'platao', 'aristoteles', 'schopenhauer', 'sartre', 'albert camus', 'immanuel kant', 'descartes', 'hegel', 'heidegger', 'wittgenstein', 'kierkegaard', 'spinoza', 'simone de beauvoir', 'byung chul han', 'luc ferry', 'mario sergio cortella', 'leandro karnal', 'olavo de carvalho', 'epicuro', 'socrates', 'voltaire'],
+  his: ['timothy w ryback', 'yuval noah harari', 'gilberto freyre', 'laurentino gomes', 'eric hobsbawm', 'jared diamond', 'lilia moritz schwarcz', 'boris fausto', 'sergio buarque de holanda', 'caio prado', 'darcy ribeiro', 'will durant', 'antony beevor', 'ian kershaw', 'jorge caldeira', 'eduardo bueno', 'mary del priore', 'leandro narloch'],
+  pol: ['murray n rothbard', 'rothbard', 'zygmunt bauman', 'glenn greenwald', 'maquiavel', 'karl marx', 'friedrich engels', 'hannah arendt', 'noam chomsky', 'thomas piketty', 'michael sandel', 'ludwig von mises', 'friedrich hayek', 'adam smith', 'rousseau', 'tocqueville', 'tomas piketty', 'pierre bourdieu', 'milton friedman', 'ha joon chang', 'francis fukuyama', 'jessé souza', 'silvio almeida', 'djamila ribeiro'],
+  cie: ['stephen hawking', 'carl sagan', 'richard dawkins', 'neil degrasse tyson', 'richard feynman', 'brian greene', 'michio kaku', 'robert martin', 'martin fowler', 'andrew hunt', 'steve mcconnell', 'yuval', 'siddhartha mukherjee', 'bill bryson', 'charles darwin', 'albert einstein'],
+  lit: ['machado de assis', 'clarice lispector', 'carlos drummond', 'jorge amado', 'graciliano ramos', 'guimaraes rosa', 'fiodor dostoievski', 'dostoievski', 'liev tolstoi', 'tolstoi', 'franz kafka', 'george orwell', 'ernest hemingway', 'william shakespeare', 'fernando pessoa', 'jose saramago', 'gabriel garcia marquez', 'mario vargas llosa', 'jorge luis borges', 'albert camus estrangeiro', 'nelson rodrigues', 'lima barreto', 'jose de alencar', 'cecilia meireles', 'manuel bandeira', 'cora coralina', 'paulo coelho', 'matt haig', 'haruki murakami', 'milan kundera', 'virginia woolf', 'oscar wilde', 'victor hugo', 'eca de queiros', 'italo calvino', 'liev', 'antoine de saint exupery', 'lewis carroll', 'julio verne', 'herman melville', 'daniel defoe', 'charles dickens', 'mark twain', 'william golding', 'truman capote', 'antonio candido', 'carolina maria de jesus', 'valerie perrin', 'joel dicker', 'fernanda witwytzky'],
+  inf: ['turma da monica', 'mauricio de sousa', 'monteiro lobato', 'ziraldo', 'roald dahl', 'dr seuss', 'maurice sendak', 'gabriel dearo', 'jeff kinney', 'eiichiro oda', 'masashi kishimoto', 'akira toriyama'],
+  bio: ['walter isaacson', 'ashlee vance']
+};
+// palavras-chave (começo de palavra; termine com espaço para palavra exata)
+const CAT_WORDS = {
+  neg: ['empreend', 'negocio', 'marketing', 'vendas', 'venda ', 'lideranca', 'lider ', 'gestao', 'gerenc', 'startup', 'administra', 'carreira', 'produtividade', 'business', 'management', 'leadership', 'entrepreneur', 'sales', 'cliente', 'varejo', 'scrum', 'agil ', 'okr', 'empresa', 'empresario', 'negociac', 'inovac', 'branding', 'ecommerce', 'e commerce', 'copywriting', 'estrategia', 'ceo ', 'executivo', 'trabalho em equipe', 'processo ', 'logistica', 'concorrenc', 'mercado ', 'vendedor', 'cultura organizac', 'rh ', 'recursos humanos', 'consultoria', 'gerente'],
+  fin: ['invest', 'dinheiro', 'rico', 'riqueza', 'financ', 'bolsa de valores', 'acoes ', 'day trade', 'trader', 'trading', 'economia', 'economic', 'milion', 'fortuna', 'aposentadoria', 'renda ', 'juros', 'bitcoin', 'cripto', 'money', 'wealth', 'rich ', 'stock', 'dividendo', 'fundos imobiliarios', 'tesouro direto', 'poupanca', 'orcamento', 'contabil', 'tributar', 'imposto', 'capitalismo', 'patrimonio', 'independencia financeira', 'liberdade financeira', 'mercado financeiro', 'analise tecnica', 'fundamentalista', 'dolar', 'inflac'],
+  dev: ['habito', 'mindset', 'sucesso', 'autoajuda', 'auto ajuda', 'motivac', 'o poder d', 'como fazer amigos', 'influenciar pessoas', 'foco ', 'disciplina', 'proposito', 'inteligencia emocional', 'autoconfianca', 'autoestima', 'felicidade', 'mudar sua vida', 'transforme', 'potencial', 'pense e enriqueca', 'sutil arte', 'procrastin', 'superac', 'resiliencia', 'autoconhecimento', 'lei da atracao', 'segredo ', 'manifest', 'atitude', 'sonhos', 'vencer ', 'vencedor', 'coragem', 'confianca', 'energia ', 'bem sucedid', 'alta performance', 'rotina', 'minimalis', 'essencialismo', 'comunicacao', 'oratoria', 'relacionamento', 'self help', 'self improvement', 'atomic habits', 'deep work', 'miracle morning'],
+  psi: ['psicolog', 'psicanal', 'terapia', 'mente ', 'cerebro', 'neuro', 'comportamento', 'ansiedade', 'depress', 'trauma', 'emocoes', 'personalidade', 'cognitiv', 'psychology', 'brain', 'mind ', 'psiquiatr', 'transtorno', 'inconsciente', 'narcis', 'toxic', 'apego', 'luto', 'vicio', 'mental ', 'saude mental', 'burnout', 'tdah', 'autismo', 'terapeuta'],
+  sau: ['saude', 'dieta', 'nutri', 'emagrec', 'jejum', 'exercicio', 'treino', 'medic', 'sono ', 'alimentac', 'vegan', 'yoga', 'meditac', 'longevidade', 'cancer', 'diabetes', 'health', 'diet ', 'fitness', 'musculac', 'corrida', 'gravidez', 'bebe ', 'menopausa', 'hormon', 'intestino', 'cetogen', 'low carb', 'anatomia', 'fisiolog', 'bem estar', 'cura ', 'plantas medicinais', 'primeiros socorros', 'vitamina', 'obesidade'],
+  esp: ['deus ', 'jesus', 'biblia', 'cristo', 'igreja', 'espirit', 'religi', 'oracao', 'sagrad', 'budis', 'zen ', 'taoismo', 'kardec', 'evangelho', 'santo ', 'santos', 'papa ', 'milagre', 'god ', 'spiritual', 'christ', 'bible', 'prayer', 'dalai lama', 'alma ', 'anjo', 'anjos', 'maria ', 'catolic', 'protestant', 'islam', 'alcorao', 'umbanda', 'candomble', 'tarot', 'astrolog', 'karma', 'reencarna', 'mediunidade', 'chico xavier', 'padre ', 'pastor', 'salmos', 'proverbios', 'apocalipse', 'ceu ', 'inferno', 'paz interior'],
+  fil: ['filosof', 'estoic', 'existenc', 'etica ', 'metafisica', 'logica', 'ontolog', 'moral ', 'dialogos', 'republica ', 'meditacoes', 'tao te', 'o principe', 'razao ', 'iluminismo', 'nihilis', 'absurdo', 'sabedoria', 'virtude'],
+  his: ['historia', 'imperio', 'guerra', 'revolucao', 'colonia', 'roma ', 'romano', 'egito', 'medieval', 'idade media', 'nazis', 'nazi', 'hitler', 'holocausto', 'civilizac', 'napoleao', 'historic', 'war ', 'empire', 'history', 'cruzadas', 'monarquia', 'escravid', 'ditadura', 'republica velha', 'segunda guerra', 'primeira guerra', 'guerra fria', 'vikings', 'grecia', 'antiguidade', 'seculo', 'independencia do brasil', 'sertao', 'cangaco', 'getulio', 'vargas'],
+  pol: ['politica', 'sociedade', 'sociolog', 'democracia', 'socialismo', 'comunis', 'liberal', 'estado ', 'direito', 'constituicao', 'desigualdade', 'racismo', 'feminis', 'genero', 'governo', 'eleic', 'politics', 'ideolog', 'populis', 'fascis', 'geopolit', 'antropolog', 'direitos humanos', 'justica', 'corrupc', 'lula', 'bolsonaro', 'esquerda', 'direita', 'conservador', 'anarq', 'sociais'],
+  cie: ['ciencia', 'fisica', 'quimica', 'biologia', 'universo', 'cosmos', 'evolucao', 'matematica', 'astronomia', 'genetica', 'tecnologia', 'computa', 'programac', 'python', 'javascript', 'inteligencia artificial', 'algoritm', 'internet', 'engenharia', 'dados ', 'data science', 'machine learning', 'quantum', 'quantica', 'neurociencia', 'ecolog', 'clima ', 'planeta', 'natureza', 'animais', 'dinossauro', 'microbio', 'linux', 'java ', 'sql ', 'excel', 'revit', 'autocad', 'bim ', 'hidraulic', 'estrutura', 'concreto', 'geotecnia', 'fundacoes', 'saneamento', 'eletrica', 'eletronica', 'arduino', 'robotica', 'sistemas operacionais', 'redes de computadores', 'seguranca da informacao', 'cloud', 'devops', 'html', 'css '],
+  bio: ['biografia', 'memorias', 'autobiograf', 'minha vida', 'diario de', 'a vida de', 'memoir', 'biography', 'my life', 'vida e obra', 'minha historia', 'a historia de', 'cartas de', 'depoimento', 'relato '],
+  rom: ['romance', 'amor ', 'paixao', 'casamento', 'noiv', 'mafios', 'mafia', 'bilionario', 'cowboy', 'duque', 'herdeiro', 'hot ', 'proibido', 'age gap', 'hockey', 'hoquei', 'sedu', 'beijo', 'love ', 'boyfriend', 'dark romance', 'gravidez', 'contrato de casamento', 'segunda chance', 'melhor amigo', 'irmao do melhor', 'cafajeste', 'rejeitad', 'vizinh', 'viuvo', 'secretaria', 'chefe ', 'apaixon', 'coracao', 'desejo', 'tentacao', 'rendic', 'conquista', 'esposa', 'marido', 'don ', 'sheik', 'principe', 'pai solo', 'babá', 'baba '],
+  fan: ['dragao', 'dragoes', 'fantasia', 'magia', 'magic', 'mago ', 'bruxa', 'feiticeiro', 'reino ', 'trono', 'espada', 'elfo', 'harry potter', 'senhor dos aneis', 'narnia', 'ficcao cientifica', 'galaxia', 'distopia', 'vampir', 'lobisomem', 'fae ', 'corte de', 'quarta asa', 'dragon', 'wizard', 'kingdom', 'sci fi', 'cavaleiro', 'profecia', 'guerreir', 'mistborn', 'escolhida', 'ceifa', 'mundo fantastico', 'alienigena', 'nave ', 'robo ', 'apocalipse zumbi', 'zumbi', 'ciborgue', 'cyberpunk', 'hobbit', 'duna ', 'fundacao', 'neuromancer'],
+  sus: ['terror', 'horror', 'assassin', 'crime', 'policial', 'detetive', 'misterio', 'mystery', 'suspense', 'thriller', 'serial', 'cadaver', 'sangue', 'assombr', 'fantasma', 'sherlock', 'investigador', 'killer', 'murder', 'ghost', 'maldicao', 'o iluminado', 'it a coisa', 'desaparec', 'sequestr', 'psicopata', 'perigo', 'noite sombria', 'segredo mortal', 'cena do crime', 'legista', 'perito', 'espiao', 'espionagem', 'cia ', 'kgb', 'conspirac', 'armadilha', 'vinganca', 'o assassino', 'a garota', 'a mulher na janela'],
+  lit: ['poesia', 'poema', 'contos', 'cronicas', 'classico', 'literatura', 'dom casmurro', 'memorias postumas', 'sagarana', 'os sertoes', 'vidas secas', 'iracema', 'o cortico', 'cartas ', 'teatro', 'tragedia', 'novela', 'antologia', 'ensaios', 'fabulas', 'prosa', 'versos', 'cordel', 'epopeia', 'odisseia', 'iliada', 'divina comedia'],
+  inf: ['infantil', 'crianca', 'turma da', 'manga', 'quadrinho', 'hq ', 'graphic', 'pequeno principe', 'diario de um banana', 'fabula', 'contos de fadas', 'historinha', 'ilustrado', 'adolescente', 'jovem', 'juvenil', 'monstrinho', 'pequen', 'colorir', 'atividades', 'edmundo e o', 'as aventuras de', 'princesa', 'dinossauro rex'],
+  edu: ['educac', 'pedagog', 'ensino', 'didatic', 'gramatica', 'portugues', 'vestibular', 'enem', 'concurso', 'codigo civil', 'curso ', 'manual', 'apostila', 'como estudar', 'aprender', 'ingles', 'idioma', 'dicionario', 'arquitetura', 'metodologia', 'tcc ', 'normas', 'nbr ', 'guia pratico', 'passo a passo', 'tratado', 'enciclopedia', 'redacao', 'escrever bem', 'professor', 'escola', 'universidade', 'faculdade', 'cientifica'],
+  art: ['arte', 'design', 'fotografia', 'cinema', 'musica', 'humor', 'piada', 'comedia', 'cultura', 'moda', 'culinaria', 'receita', 'cozinha', 'gastronomia', 'jardim', 'viagem', 'guia de', 'pintura', 'desenho', 'teatro', 'danca', 'jogo', 'games', 'esporte', 'futebol', 'xadrez', 'pesca', 'cerveja', 'vinho', 'cafe ', 'gato', 'cachorro', 'pets', 'hobby', 'artesanato', 'croche', 'costura', 'decoracao', 'tatuagem', 'quadrinhos de humor']
+};
+const CAT_ORDER = CATS.map(c => c[0]);
+
+// categoria escrita no nome do arquivo, ex.: "[Negócios] Título - Autor.epub" ou "Título (Finanças).epub"
+const CAT_ALIASES = {
+  neg: ['negocios', 'negocio', 'empreendedorismo', 'business', 'gestao'], fin: ['financas', 'financeiro', 'investimentos', 'financas e investimentos', 'economia'],
+  dev: ['desenvolvimento pessoal', 'autoajuda', 'auto ajuda', 'dev pessoal', 'crescimento pessoal'], psi: ['psicologia'], sau: ['saude', 'saude e bem estar', 'bem estar'],
+  esp: ['espiritualidade', 'religiao', 'espiritualidade e religiao'], fil: ['filosofia'], his: ['historia'], pol: ['politica', 'sociedade', 'politica e sociedade'],
+  cie: ['ciencia', 'tecnologia', 'ciencia e tecnologia', 'ciencias'], bio: ['biografia', 'biografias'], rom: ['romance'], fan: ['fantasia', 'ficcao cientifica', 'fantasia e ficcao cientifica'],
+  sus: ['suspense', 'terror', 'policial', 'suspense e terror', 'misterio'], lit: ['literatura', 'classicos', 'literatura e classicos', 'poesia', 'contos'],
+  inf: ['infantil', 'infantojuvenil', 'juvenil', 'hq', 'quadrinhos'], edu: ['educacao', 'referencia', 'educacao e referencia'], art: ['arte', 'cultura', 'lazer', 'humor'], out: ['outros']
+};
+function tagCat(name) {
+  for (const m of String(name).matchAll(/[\[\(\{]([^\]\)\}]{2,40})[\]\)\}]/g)) {
+    const t = catNorm(m[1]); if (!t) continue;
+    for (const [id, al] of Object.entries(CAT_ALIASES)) if (al.includes(t) || catNorm(CAT_NAME[id]) === t) return id;
+  }
+  return null;
+}
+function classifyName(name) {
+  const tg = tagCat(name); if (tg) return tg;
+  { const i0 = String(name).lastIndexOf(' - '); if (i0 > 0 && typeof CATAUTH !== 'undefined') { const a = catNorm(String(name).slice(i0 + 3).replace(/\.(epub|pdf|mobi|azw3?|prc)$/i, '')).replace(/ \d+$/, ''); if (CATAUTH[a]) return CATAUTH[a]; } }
+  const raw = String(name).replace(/\.(epub|pdf|mobi|azw3?|prc)$/i, ''), text = ' ' + catNorm(raw) + ' ';
+  // autores (a parte depois do último " - ")
+  const i = raw.lastIndexOf(' - '), author = ' ' + (i > 0 ? catNorm(raw.slice(i + 3)) : '') + ' ';
+  for (const k of CAT_ORDER) for (const a of CAT_AUTHORS[k] || []) { const n = ' ' + catNorm(a) + ' '; if (author.includes(n) || text.includes(n)) return k; }
+  let best = 'out', bs = 0;
+  for (const k of CAT_ORDER) {
+    let s = 0; for (const w of CAT_WORDS[k] || []) if (text.includes(' ' + w)) s += w.length >= 6 ? 2 : 1;
+    if (s > bs) { bs = s; best = k; }
+  }
+  return best;
+}

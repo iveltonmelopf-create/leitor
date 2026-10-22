@@ -73,17 +73,30 @@ function signIn(prompt = '') {
     if (!cfg.clientId) return rej(new Error('Falta o Client ID (⚙).'));
     if (!window.google || !google.accounts) return rej(new Error('Google indisponível (sem internet?).'));
     const tc = google.accounts.oauth2.initTokenClient({
-      client_id: cfg.clientId, scope: SCOPES,
+      client_id: cfg.clientId, scope: SCOPES, hint: cfg.hint || undefined,
       callback: r => {
         if (r.error) return rej(new Error(r.error));
         token = r.access_token; tokenExp = now() + (r.expires_in - 90) * 1000;
-        lsSet('token', { v: token, exp: tokenExp }); lsSet('wasLogged', true); res();
+        lsSet('token', { v: token, exp: tokenExp }); lsSet('wasLogged', true);
+        if (!cfg.hint) fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)', { headers: { Authorization: 'Bearer ' + token } })
+          .then(x => x.json()).then(j => { if (j?.user?.emailAddress) { cfg.hint = j.user.emailAddress; saveCfg(); } }).catch(() => { });
+        res();
       },
       error_callback: e => rej(new Error(e.type || 'login cancelado')),
     });
     tc.requestAccessToken({ prompt });
   });
 }
+let refreshing = null, lastTry = 0;
+function silentRefresh(force) {
+  if (authed() || refreshing || !cfg.clientId || !navigator.onLine || !lsGet('wasLogged', false)) return;
+  if (cur && !force) return;                                 // lendo: não interrompe
+  if (Date.now() - lastTry < 120000) return; lastTry = Date.now();
+  refreshing = signIn('').then(() => {
+    hideBanner(); $('#bSync').classList.remove('stale'); doSync(true); for (const id of [...DIRTY]) syncBook(id);
+  }).catch(e => console.warn('renovação silenciosa:', e.message)).finally(() => { refreshing = null; });
+}
+document.addEventListener('pointerup', () => silentRefresh(), { capture: true, passive: true });
 async function api(url, opt = {}) {
   if (!authed()) throw new Error('auth');
   const r = await fetch(url, { ...opt, headers: { ...(opt.headers || {}), Authorization: 'Bearer ' + token } });
@@ -146,6 +159,8 @@ function mergeBook(l, r) {
   if (!r) return l;
   return { prog: (r.prog && (!l.prog || r.prog.t > l.prog.t)) ? r.prog : l.prog, hl: mergeArr(l.hl, r.hl), ink: mergeArr(l.ink, r.ink) };
 }
+const DIRTY = new Set(lsGet('dirty', []));
+const saveDirty = () => lsSet('dirty', [...DIRTY]);
 let syncing = new Set(), syncTimers = {};
 async function syncBook(id) {
   if (!authed() || !navigator.onLine || syncing.has(id)) return;
@@ -169,18 +184,19 @@ async function syncBook(id) {
       const j = await (await api(url, { method: did ? 'PATCH' : 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body: payload })).json();
       S.driveIds[id] = j.id;
     }
-    S.books[id] = merged; saveState();
+    S.books[id] = merged; saveState(); DIRTY.delete(id); saveDirty();
   } catch (e) { console.warn('sync', e); }
   finally { syncing.delete(id); }
 }
 function scheduleSync(id) { clearTimeout(syncTimers[id]); syncTimers[id] = setTimeout(() => syncBook(id), 5000); }
-function changed() { saveState(); if (cur) scheduleSync(cur.item.id); }
+function changed() { saveState(); if (cur) { DIRTY.add(cur.item.id); saveDirty(); scheduleSync(cur.item.id); } }
 document.addEventListener('visibilitychange', () => { if (document.hidden && cur) { saveState(); syncBook(cur.item.id); } });
 
 /* ---------- download de arquivos ---------- */
 async function getFileBuf(item, silent) {
   const cached = await idb.get('files', item.id);
   if (cached) return cached;
+  if (!authed() && refreshing) await refreshing;
   if (!authed()) await signIn('');
   if (!silent) toast('Baixando…', 60000);
   const r = await api('https://www.googleapis.com/drive/v3/files/' + item.id + '?alt=media');
@@ -298,6 +314,39 @@ async function genCovers(manual) {
   finally { covering = false; saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); toast('Capas: ' + ok + ' encontradas' + (fail ? ', ' + fail + ' sem capa' : '') + (lastErr ? ' (' + lastErr.slice(0, 60) + ')' : ''), 6000); }
 }
 
+/* ---------- categorias ---------- */
+const CATOV = lsGet('catov', {});               // correções feitas à mão (pelo nome do livro)
+function catOf(it) {
+  const k = it._k || (it._k = catKey(it.name));
+  return CATOV[k] || (typeof CATMAP !== 'undefined' && CATMAP[k]) || (it._cv === CAT_VERSION && it._c ? it._c : (it._cv = CAT_VERSION, it._c = classifyName(it.name)));
+}
+function renderCats(base, q) {
+  const box = $('#cats');
+  if (q || !base.length) { box.hidden = true; return; }
+  const counts = {}; for (const x of base) { const k = catOf(x); counts[k] = (counts[k] || 0) + 1; }
+  box.hidden = false; box.innerHTML = '';
+  const cur = counts[cfg.cat] ? cfg.cat : 'todas';
+  const mk = (id, label, n) => {
+    const b = document.createElement('button'); b.className = cur === id ? 'on' : ''; b.textContent = label;
+    const s = document.createElement('span'); s.textContent = n; b.appendChild(s);
+    b.onclick = () => { cfg.cat = id; saveCfg(); renderLibrary(); $('#grid').scrollTop = 0; }; box.appendChild(b);
+  };
+  mk('todas', 'Todas', base.length);
+  for (const [id, name] of CATS) if (counts[id]) mk(id, name, counts[id]);
+}
+function catPicker(it) {
+  const cur = catOf(it);
+  modal('<div class="box"><b></b><div class="catlist"></div><div class="row"><span class="sp"></span><button id="cpX">Fechar</button></div></div>');
+  $('#modal b').textContent = 'Categoria de "' + cleanName(it.name) + '"';
+  const box = $('#modal .catlist');
+  for (const [id, name] of CATS) {
+    const b = document.createElement('button'); b.textContent = name; b.className = id === cur ? 'on' : '';
+    b.onclick = () => { CATOV[it._k || catKey(it.name)] = id; lsSet('catov', CATOV); closeModal(); renderLibrary(); toast('Movido para ' + name, 1500); };
+    box.appendChild(b);
+  }
+  $('#cpX').onclick = closeModal;
+}
+
 /* ---------- estante ---------- */
 function renderLibrary() {
   const grid = $('#grid'); grid.innerHTML = '';
@@ -307,7 +356,10 @@ function renderLibrary() {
   const shelf = [...S.library].sort((a, b) => cleanName(a.name).localeCompare(cleanName(b.name), 'pt', { numeric: true, sensitivity: 'base' }));
   let tab = cfg.tab || (reading.length ? 'lendo' : 'estante');
   document.querySelectorAll('#tabs button').forEach(b => { b.classList.toggle('on', !q && b.dataset.tab === tab); b.setAttribute('aria-selected', !q && b.dataset.tab === tab); b.querySelector('span').textContent = b.dataset.tab === 'lendo' ? reading.length : S.library.length; });
-  let list = q ? shelf.filter(x => x.name.toLowerCase().includes(q)) : tab === 'lendo' ? reading : shelf;
+  const base = q ? shelf.filter(x => x.name.toLowerCase().includes(q)) : tab === 'lendo' ? reading : shelf;
+  renderCats(base, q);
+  const catSel = !q && cfg.cat && cfg.cat !== 'todas' && base.some(x => catOf(x) === cfg.cat) ? cfg.cat : null;
+  let list = catSel ? base.filter(x => catOf(x) === catSel) : base;
   if (!q && tab === 'lendo' && !reading.length && S.library.length) {
     grid.innerHTML = '<div class="empty">Nenhum livro em andamento.<br>Abra um livro na aba Estante e ele aparece aqui.<br><button id="eShelf">Ir para a Estante</button></div>';
     $('#eShelf').onclick = () => { cfg.tab = 'estante'; saveCfg(); renderLibrary(); };
@@ -317,7 +369,7 @@ function renderLibrary() {
     grid.innerHTML = '<div class="empty">' + (S.library.length ? 'Nada encontrado.' :
       (!cfg.clientId ? 'Para começar, abra as configurações e cole o Client ID do Google.<br>Ou abra um arquivo deste aparelho pelo botão de adicionar.<br><button id="eSet">Configurações</button>' :
         'Sua estante está vazia.<br>Coloque EPUB, PDF ou MOBI na pasta do Google Drive e atualize.<br><button id="eSync">Atualizar do Drive</button>')) + '</div>';
-    $('#eSet')?.addEventListener('click', openSettings); $('#eSync')?.addEventListener('click', doSync);
+    $('#eSet')?.addEventListener('click', openSettings); $('#eSync')?.addEventListener('click', () => doSync());
     return;
   }
   const hero = !q && tab === 'lendo' && list.length && started(list[0]) ? list[0] : null;
@@ -349,17 +401,18 @@ function renderLibrary() {
   }
 }
 function cardMenu(it) {
-  modal(`<div class="box"><b></b><div class="row"><button id="mDel" class="danger">${dlCache.has(it.id) ? 'Remover cópia offline' : ''}</button>${it.local ? '<button id="mRm" class="danger">Remover da estante</button>' : ''}<span class="sp"></span><button id="mX">Fechar</button></div></div>`);
+  modal(`<div class="box"><b></b><div class="row"><button id="mCat">Categoria</button><button id="mDel" class="danger">${dlCache.has(it.id) ? 'Remover cópia offline' : ''}</button>${it.local ? '<button id="mRm" class="danger">Remover da estante</button>' : ''}<span class="sp"></span><button id="mX">Fechar</button></div></div>`);
   $('#modal b').textContent = cleanName(it.name);
+  $('#mCat').textContent = 'Categoria: ' + (CAT_NAME[catOf(it)] || 'Outros'); $('#mCat').onclick = () => catPicker(it);
   const del = $('#mDel'); if (!dlCache.has(it.id)) del.hidden = true;
   del.onclick = async () => { await idb.del('files', it.id); dlCache.delete(it.id); closeModal(); renderLibrary(); };
   if ($('#mRm')) $('#mRm').onclick = async () => { await idb.del('files', it.id); dlCache.delete(it.id); S.library = S.library.filter(x => x.id !== it.id); saveState(); closeModal(); renderLibrary(); };
   $('#mX').onclick = closeModal;
 }
-async function doSync() {
+async function doSync(quiet) {
   const b = $('#bSync'); b.classList.add('busy');
-  try { await refreshLibrary(); hideBanner(); renderLibrary(); toast(S.library.length + ' livros'); genCovers(); }
-  catch (e) { showBanner(e.message === 'auth' ? 'Sessão expirada.' : e.message, true); }
+  try { await refreshLibrary(); hideBanner(); b.classList.remove('stale'); renderLibrary(); if (!quiet) toast(S.library.length + ' livros'); genCovers(); }
+  catch (e) { if (!quiet) showBanner(e.message === 'auth' ? 'Sessão expirada.' : e.message, true); else if (e.message === 'auth') b.classList.add('stale'); }
   b.classList.remove('busy');
 }
 function showBanner(msg, withLogin) {
@@ -1087,7 +1140,7 @@ function keyNav(e) {
 }
 document.addEventListener('keyup', keyNav);
 $('#next').onclick = next; $('#prev').onclick = prev;
-$('#rBack').onclick = closeReader;
+$('#rBack').onclick = () => { silentRefresh(true); closeReader(); };       // ao sair do livro, renova o login e sincroniza
 $('#rNotes').onclick = openNotes;
 $('#zIn').onclick = () => { pdfZoom = Math.min(4, pdfZoom * 1.25); cfg.zoom = pdfZoom; saveCfg(); renderPdfPage(); };
 $('#zOut').onclick = () => { pdfZoom = Math.max(.6, pdfZoom / 1.25); cfg.zoom = pdfZoom; saveCfg(); renderPdfPage(); };
@@ -1232,7 +1285,7 @@ function applyTheme() { document.body.dataset.theme = 'black'; document.querySel
 /* ---- biblioteca: botões e arquivo local ---- */
 $('#q').addEventListener('input', renderLibrary);
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { cfg.tab = b.dataset.tab; saveCfg(); $('#q').value = ''; renderLibrary(); $('#grid').scrollTop = 0; });
-$('#bSync').onclick = doSync;
+$('#bSync').onclick = () => doSync();
 $('#bSet').onclick = openSettings;
 $('#bLocal').onclick = () => $('#fileIn').click();
 $('#fileIn').onchange = async e => {
@@ -1332,8 +1385,8 @@ window.addEventListener('online', () => { if (cur) syncBook(cur.item.id); });
   applyTheme(); applyNight(); renderLibrary();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
   if (cfg.clientId && navigator.onLine) {
-    if (authed()) { doSync(); genCovers(); }
-    else if (lsGet('wasLogged', false)) showBanner('Sessão do Google expirada.', true);
+    if (authed()) { doSync(true); genCovers(); }
+    else if (lsGet('wasLogged', false)) $('#bSync').classList.add('stale');      // renova sozinho no primeiro toque
     else showBanner('Entre com o Google para ver os livros do Drive.', true);
   } else if (!cfg.clientId) showBanner('Configure o Client ID do Google (⚙) para sincronizar com o Drive.', false);
 })();

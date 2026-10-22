@@ -238,3 +238,16 @@ html{color-scheme:dark}
 #modal .srow2{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid var(--glass-line);font-size:15px;line-height:24px}
 #modal .srow2 span:first-child{color:var(--t3)}
 #modal .srow2 span:last-child{color:var(--t1);text-align:right;font-weight:500}
+
+#bSync.stale{opacity:.5}
+
+/* categorias */
+#cats{display:flex;gap:8px;overflow-x:auto;padding:0 16px 8px;flex:none;scrollbar-width:none}
+#cats::-webkit-scrollbar{display:none}
+#cats button{flex:none;white-space:nowrap;height:32px;padding:0 16px;font-size:13px;border-radius:var(--r2);background:var(--glass);border:1px solid var(--glass-line);color:var(--t2)}
+#cats button span{font:400 11px var(--f-mono);color:var(--t3);margin-left:8px}
+#cats button.on{background:var(--acc);border-color:var(--acc);color:var(--on-acc);font-weight:700}
+#cats button.on span{color:var(--on-acc);opacity:.75}
+#modal .catlist{display:flex;flex-wrap:wrap;gap:8px}
+#modal .catlist button{background:var(--glass);border:1px solid var(--glass-line);font-size:13px;padding:0 16px;min-height:32px}
+#modal .catlist button.on{background:var(--acc);border-color:var(--acc);color:var(--on-acc)}

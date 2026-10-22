@@ -42,6 +42,7 @@
     <button id="bSet" class="ic" title="Configurações" aria-label="Configurações"><svg><use href="#i-sliders"/></svg></button>
   </header>
   <div id="tabs" role="tablist"><button data-tab="lendo" role="tab">Lendo<span></span></button><button data-tab="estante" role="tab">Estante<span></span></button></div>
+  <div id="cats" hidden></div>
   <div id="banner" hidden></div>
   <main id="grid"></main>
   <input id="fileIn" type="file" accept=".epub,.pdf,.mobi,.azw3,.azw,.prc,application/epub+zip,application/pdf" hidden>
@@ -117,6 +118,8 @@
 <script src="jszip.min.js"></script>
 <script src="epub.min.js"></script>
 <script src="pdf.min.js"></script>
+<script src="categorias.js"></script>
+<script src="catmap.js"></script>
 <script src="catalogo.js"></script>
 <script src="app.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer onload="window.gisReady&&window.gisReady()"></script>
