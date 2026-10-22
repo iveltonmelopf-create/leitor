@@ -202,7 +202,7 @@ async function syncBook(id) {
 }
 /* baixa o progresso/destaques de TODOS os livros que outro aparelho salvou (só os que mudaram) */
 async function pullAll() {
-  const files = await listAll("'appDataFolder' in parents and name contains 'book_'", 'id,name,modifiedTime', 'appDataFolder');
+  const files = await (await listAll("'appDataFolder' in parents", 'id,name,modifiedTime', 'appDataFolder')).filter(f => /^book_.+\.json$/.test(f.name));
   const mt = (S.bookMt ||= {}), todo = [];
   for (const f of files) {
     const id = f.name.replace(/^book_/, '').replace(/\.json$/, ''); if (!id) continue;
@@ -230,9 +230,26 @@ function scheduleSync(id) { clearTimeout(syncTimers[id]); syncTimers[id] = setTi
 function changed() { saveState(); if (cur) { DIRTY.add(cur.item.id); saveDirty(); scheduleSync(cur.item.id); } }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { if (cur) { saveState(); syncBook(cur.item.id); } }
+  else if (cur) checkRemoteProgress().catch(e => console.warn('remoto', e.message));
   else if (!cur && authed() && !$('#lib').hidden && Date.now() - (visibilitychange.last || 0) > 60000) { visibilitychange.last = Date.now(); doSync(true); }   // voltou ao app: puxa o que outro aparelho mudou
 });
 const visibilitychange = { last: 0 };
+/* livro aberto e outro aparelho avançou: oferece ir para lá (como o Kindle) */
+async function checkRemoteProgress() {
+  if (!cur || !navigator.onLine) return;
+  const id = cur.item.id;
+  if (!authed()) { await Promise.race([signIn('').catch(() => { }), sleep(8000)]); if (!authed() || !cur || cur.item.id !== id) return; }
+  const b = getBook(id); let did = S.driveIds[id];
+  if (!did) { const l = await listAll("name='book_" + id + ".json' and 'appDataFolder' in parents", 'id', 'appDataFolder'); did = l[0]?.id; if (!did) return; S.driveIds[id] = did; }
+  const remote = await (await api('https://www.googleapis.com/drive/v3/files/' + did + '?alt=media')).json();
+  const rp = remote.prog; if (!rp || (b.prog && rp.t <= b.prog.t)) return;
+  const same = b.prog && (rp.loc ? rp.loc === b.prog.loc : rp.page === b.prog.page); if (same) return;
+  if (!cur || cur.item.id !== id) return;
+  const pct = Math.round((rp.pct || 0) * 100);
+  modal('<div class="box"><b>Outro aparelho avançou</b><div class="help">Em outro aparelho você parou em ' + (rp.page ? 'página ' + rp.page + ' · ' : '') + pct + '%. Ir para lá?</div><div class="row"><button id="rpGo" class="primary">Ir para lá</button><span class="sp"></span><button id="rpNo">Ficar aqui</button></div></div>');
+  $('#rpNo').onclick = closeModal;
+  $('#rpGo').onclick = () => { closeModal(); b.prog = { ...rp }; changed(); cur.kind === 'pdf' ? pdfGo(rp.page) : rend.display(rp.loc); };
+}
 
 /* ---------- download de arquivos ---------- */
 async function getFileBuf(item, silent) {
