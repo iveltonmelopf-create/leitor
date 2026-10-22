@@ -301,8 +301,17 @@ async function genCovers(manual) {
 function renderLibrary() {
   const grid = $('#grid'); grid.innerHTML = '';
   const q = $('#q').value.trim().toLowerCase();
-  let list = S.library.filter(x => !q || x.name.toLowerCase().includes(q));
-  list.sort((a, b) => ((getBook(b.id).prog?.t || 0) - (getBook(a.id).prog?.t || 0)) || a.name.localeCompare(b.name));
+  const pct = x => getBook(x.id).prog?.pct || 0, started = x => !!getBook(x.id).prog?.t;
+  const reading = S.library.filter(x => started(x) && pct(x) < .97).sort((a, b) => (getBook(b.id).prog?.t || 0) - (getBook(a.id).prog?.t || 0));
+  const shelf = [...S.library].sort((a, b) => cleanName(a.name).localeCompare(cleanName(b.name), 'pt', { numeric: true, sensitivity: 'base' }));
+  let tab = cfg.tab || (reading.length ? 'lendo' : 'estante');
+  document.querySelectorAll('#tabs button').forEach(b => { b.classList.toggle('on', !q && b.dataset.tab === tab); b.setAttribute('aria-selected', !q && b.dataset.tab === tab); b.querySelector('span').textContent = b.dataset.tab === 'lendo' ? reading.length : S.library.length; });
+  let list = q ? shelf.filter(x => x.name.toLowerCase().includes(q)) : tab === 'lendo' ? reading : shelf;
+  if (!q && tab === 'lendo' && !reading.length && S.library.length) {
+    grid.innerHTML = '<div class="empty">Nenhum livro em andamento.<br>Abra um livro na aba Estante e ele aparece aqui.<br><button id="eShelf">Ir para a Estante</button></div>';
+    $('#eShelf').onclick = () => { cfg.tab = 'estante'; saveCfg(); renderLibrary(); };
+    return;
+  }
   if (!list.length) {
     grid.innerHTML = '<div class="empty">' + (S.library.length ? 'Nada encontrado.' :
       (!cfg.clientId ? 'Para começar, abra as configurações e cole o Client ID do Google.<br>Ou abra um arquivo deste aparelho pelo botão de adicionar.<br><button id="eSet">Configurações</button>' :
@@ -310,7 +319,7 @@ function renderLibrary() {
     $('#eSet')?.addEventListener('click', openSettings); $('#eSync')?.addEventListener('click', doSync);
     return;
   }
-  const hero = !q && getBook(list[0].id).prog?.t ? list[0] : null;
+  const hero = !q && tab === 'lendo' && list.length && started(list[0]) ? list[0] : null;
   if (hero) {
     const hp = Math.round((getBook(hero.id).prog?.pct || 0) * 100);
     const h = document.createElement('div'); h.className = 'hero';
@@ -319,7 +328,7 @@ function renderLibrary() {
     h.querySelector('.cap').textContent = 'Continuar de onde parou' + (hp ? ' · ' + hp + '%' : '');
     h.querySelector('h2').textContent = cleanName(hero.name); h.querySelector('.prog i').style.width = hp + '%';
     h.addEventListener('click', () => openBook(hero)); grid.appendChild(h);
-    if (list.length > 1) { const s = document.createElement('div'); s.className = 'sect'; s.textContent = 'Estante'; grid.appendChild(s); }
+    if (list.length > 1) { const s = document.createElement('div'); s.className = 'sect'; s.textContent = 'Outros em andamento'; grid.appendChild(s); }
   }
   for (const it of list) {
     if (it === hero) continue;
@@ -479,12 +488,12 @@ async function openBook(item) {
   try { buf = await getFileBuf(item); }
   catch (e) { toast(e.message === 'auth' ? 'Entre com o Google (⚙) para baixar.' : e.message); closeReader(); return; }
   if (authed() && navigator.onLine) await Promise.race([syncBook(item.id), sleep(4000)]);
-  try { buf = await getReadable(item, buf); cur.kind === 'pdf' ? await openPdf(buf) : await openEpub(buf); }
+  try { buf = await getReadable(item, buf); cur.kind === 'pdf' ? await openPdf(buf) : await openEpub(buf); autoHideChrome(); }
   catch (e) { console.error(e); toast('Não consegui abrir: ' + e.message, 6000); closeReader(); }
 }
 
 async function closeReader() {
-  hideSheet(); closePanel();
+  clearTimeout(ahT); hideSheet(); closePanel();
   $('#reader').classList.remove('imm'); $('#viewer').style.left = $('#viewer').style.right = '';
   const id = cur?.item.id;
   try { rend?.destroy(); ebook?.destroy(); } catch { } rend = ebook = null;
@@ -776,9 +785,15 @@ function toggleChrome(force) {
   const r = $('#reader'), on = force ?? !r.classList.contains('imm');
   r.classList.toggle('imm', on);
   if (on && !lsGet('immHint', false)) { lsSet('immHint', true); toast('Toque no centro da tela para mostrar os botões de novo', 3500); }
-  setTimeout(relayout, 80);
 }
-function zoneTap(x) { if (x < .28) prev(); else if (x > .72) next(); else toggleChrome(); }
+// centro da tela só mostra/esconde os painéis; só as laterais viram a página
+function zoneTap(x) { if (cfg.tapTurn !== false && x < .25) prev(); else if (cfg.tapTurn !== false && x > .75) next(); else toggleChrome(); }
+let ahT;
+function autoHideChrome() {                     // ao abrir um livro, os painéis somem sozinhos depois de alguns segundos
+  clearTimeout(ahT);
+  ahT = setTimeout(() => { if (cur && !ink.on && $('#panel').hidden && $('#modal').hidden) toggleChrome(true); }, 3500);
+}
+$('#reader').addEventListener('pointerdown', () => clearTimeout(ahT), true);
 $('#rFull').onclick = () => toggleChrome(true);
 new MutationObserver(() => { $('#mini').textContent = $('#pos').textContent; }).observe($('#pos'), { childList: true, characterData: true, subtree: true });
 $('#pdfWrap').addEventListener('click', e => {
@@ -1052,6 +1067,7 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
     const h = document.createElement('div'); h.className = 'help';
     h.innerHTML = 'PDF não reorganiza o texto: para letras maiores use <b>Sem margens</b> (corta o branco das bordas) e aumente o <b>zoom</b>. No celular, pinça com dois dedos também ajusta. No computador: roda do mouse vira a página, Ctrl + roda dá zoom, setas/Espaço viram página, + e − dão zoom, F esconde os botões.'; body.appendChild(h);
   }
+  mk('Tocar nas laterais vira a página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.tapTurn !== false, v => { cfg.tapTurn = v; saveCfg(); });
   mk('Efeito de virar página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.flip !== false, v => { cfg.flip = v; saveCfg(); });
   const row = document.createElement('div'); row.className = 'row'; body.appendChild(row);
   const b1 = document.createElement('button'); b1.textContent = 'Esconder botões'; b1.onclick = () => { closePanel(); toggleChrome(true); };
@@ -1073,6 +1089,7 @@ $('#rTheme').onclick = () => { cfg.theme = THEMES[(THEMES.indexOf(cfg.theme) + 1
 
 /* ---- biblioteca: botões e arquivo local ---- */
 $('#q').addEventListener('input', renderLibrary);
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { cfg.tab = b.dataset.tab; saveCfg(); $('#q').value = ''; renderLibrary(); $('#grid').scrollTop = 0; });
 $('#bSync').onclick = doSync;
 $('#bSet').onclick = openSettings;
 $('#bLocal').onclick = () => $('#fileIn').click();

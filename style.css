@@ -117,7 +117,7 @@ body[data-theme=black] #pdfPage{background:#000;box-shadow:none}
 .dot.on{outline:2px solid var(--acc);outline-offset:2px}
 .chk{display:flex;align-items:center;gap:8px;margin-left:auto}
 
-#reader.imm .rbar,#reader.imm .rfoot,#reader.imm #inkbar,#reader.imm .edge{display:none}
+#reader.imm .edge{display:none}
 #mini{display:none}
 #reader.imm #mini{display:block;position:absolute;right:16px;bottom:calc(8px + env(safe-area-inset-bottom));font:400 12px var(--f-mono);color:var(--n5);pointer-events:none;z-index:6}
 
@@ -214,3 +214,22 @@ html{color-scheme:dark}
 #night .warm{background:#FFA45A;mix-blend-mode:multiply}
 #night .dim{background:#000}
 #pdfPage{vertical-align:top}
+
+/* barras flutuam por cima do texto: mostrar/esconder não reorganiza o livro (não troca de página) */
+#stage{position:absolute;inset:0;flex:none}
+.rbar,.rfoot,#inkbar{position:absolute;left:0;right:0;z-index:12;background:var(--glass-dense);transition:transform 200ms var(--ease-in),opacity 200ms var(--ease-in)}
+.rbar{top:0}
+.rfoot{bottom:0}
+#inkbar{top:calc(57px + env(safe-area-inset-top));z-index:11}
+#reader.imm .rbar{transform:translateY(-100%)}
+#reader.imm .rfoot{transform:translateY(100%)}
+#reader.imm #inkbar{transform:translateY(-300%)}
+#reader.imm .rbar,#reader.imm .rfoot,#reader.imm #inkbar{opacity:0;pointer-events:none;transition-duration:140ms;transition-timing-function:var(--ease-out)}
+@media (prefers-reduced-motion:reduce){.rbar,.rfoot,#inkbar{transition:opacity 100ms linear}#reader.imm .rbar,#reader.imm .rfoot,#reader.imm #inkbar{transform:none}}
+
+/* abas Lendo / Estante */
+#tabs{display:flex;gap:8px;padding:8px 16px;flex:none}
+#tabs button{height:40px;padding:0 24px;border-radius:var(--r2);background:var(--glass);border:1px solid var(--glass-line);color:var(--t2)}
+#tabs button span{font:400 12px var(--f-mono);color:var(--t3);margin-left:8px}
+#tabs button.on{background:var(--acc);border-color:var(--acc);color:var(--on-acc);font-weight:700}
+#tabs button.on span{color:var(--on-acc);opacity:.75}

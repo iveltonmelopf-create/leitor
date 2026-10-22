@@ -33,13 +33,14 @@
 
 <div id="lib" class="screen">
   <header class="bar">
-    <h1>Estante</h1>
+    <h1>Biblioteca</h1>
     <input id="q" type="search" placeholder="Buscar livro" aria-label="Buscar livro">
     <button id="bDisc" class="ic" title="Descobrir livros (mais vendidos)" aria-label="Descobrir"><svg><use href="#i-book"/></svg></button>
     <button id="bSync" class="ic" title="Atualizar do Drive" aria-label="Atualizar"><svg><use href="#i-sync"/></svg></button>
     <button id="bLocal" class="ic" title="Abrir arquivo deste aparelho" aria-label="Abrir arquivo"><svg><use href="#i-plus"/></svg></button>
     <button id="bSet" class="ic" title="Configurações" aria-label="Configurações"><svg><use href="#i-sliders"/></svg></button>
   </header>
+  <div id="tabs" role="tablist"><button data-tab="lendo" role="tab">Lendo<span></span></button><button data-tab="estante" role="tab">Estante<span></span></button></div>
   <div id="banner" hidden></div>
   <main id="grid"></main>
   <input id="fileIn" type="file" accept=".epub,.pdf,.mobi,.azw3,.azw,.prc,application/epub+zip,application/pdf" hidden>
