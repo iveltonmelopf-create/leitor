@@ -40,6 +40,7 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } ca
 
 let cfg = Object.assign({ clientId: '674620611576-d1gfmdv2t89kn9fia7rn4svli0s46m8l.apps.googleusercontent.com', folder: '', theme: 'dark', fs: 110, flow: 'paginated', finger: false, zoom: 1, fit: 'crop', dim: 0, warm: 0, lh: 0, ff: 'book', just: false, cols: 'auto', mg: 2 }, lsGet('cfg', {}));
 const saveCfg = () => lsSet('cfg', cfg);
+cfg.theme = 'black';                       // o app tem um único modo: escuro
 
 // S.library: [{id,name,mime,size,mt,cover,local}]  S.books[id]: {prog,hl,ink}  S.driveIds[id]: id do json no appData
 let S = { library: [], books: {}, driveIds: {}, crops: {}, stats: {} };
@@ -520,7 +521,7 @@ function showSheet(p) {
   COLORS.forEach(c => { const b = document.createElement('button'); b.className = 'dot'; b.style.background = c; b.onclick = () => addHl(c, false); dots.appendChild(b); });
 }
 function hideSheet() {
-  selArmed = false;
+  selArmed = false; if (selOff) { try { selOff(); } catch { } selOff = null; }
   $('#sheet').hidden = true;
   try { if (pending?.contents) pending.contents.window.getSelection().removeAllRanges(); else getSelection().removeAllRanges(); } catch { }
   pending = null;
@@ -593,6 +594,10 @@ async function openEpub(buf) {
   rend = ebook.renderTo($('#viewer'), { width: '100%', height: '100%', flow: cfg.flow, spread: 'auto', allowScriptedContent: false });
   for (const [n, r] of Object.entries(EPUB_THEMES)) rend.themes.register(n, r);
   rend.hooks.content.register(c => applyUserCss(c));
+  if (COARSE) rend.hooks.content.register(c => {
+    const doc = c.document, setSel = on => { for (const p of ['user-select', '-webkit-user-select']) doc.body.style.setProperty(p, on ? 'text' : 'none', 'important'); doc.body.style.setProperty('-webkit-touch-callout', 'none', 'important'); };
+    longPressSelect(doc, doc, c.window, setSel);
+  });
   applyEpubLook(true);
   b.hl.filter(h => h.kind === 'epub' && !h.del).forEach(renderHl);
   rend.on('relocated', loc => {
@@ -605,6 +610,7 @@ async function openEpub(buf) {
   let tx = 0, ty = 0;
   rend.on('touchstart', e => { tx = e.changedTouches[0].screenX; ty = e.changedTouches[0].screenY; lastTS = Date.now(); });
   rend.on('touchend', e => {
+    if (selActive) return;
     const dx = e.changedTouches[0].screenX - tx, dy = e.changedTouches[0].screenY - ty;
     if (cfg.flow === 'paginated' && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) dx < 0 ? next() : prev();
   });
@@ -733,6 +739,38 @@ function selectionAllowed(delay) {             // no toque simples não selecion
   if (Date.now() - (delay || 0) - lastTS >= 400) { selArmed = true; return true; }
   return false;
 }
+
+/* ---- seleção só ao segurar: o toque simples não seleciona, não pisca e não faz nada ---- */
+let selActive = false, selOff = null;
+function longPressSelect(target, doc, win, setSel) {
+  let timer = 0, sx = 0, sy = 0, dragging = false;
+  setSel(false);
+  const caret = (x, y) => doc.caretRangeFromPoint ? doc.caretRangeFromPoint(x, y) : null;
+  const start = () => {
+    const r = caret(sx, sy); if (!r) return;
+    setSel(true); const sel = win.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    try { sel.modify('move', 'backward', 'word'); sel.modify('extend', 'forward', 'word'); } catch { }
+    if (sel.isCollapsed) { setSel(false); return; }
+    dragging = selActive = selArmed = true; selOff = () => { setSel(false); try { win.getSelection().removeAllRanges(); } catch { } }; navigator.vibrate?.(12);
+  };
+  target.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) { clearTimeout(timer); return; }
+    if (pending || selOff) hideSheet();                    // tocar em outro lugar fecha a seleção
+    const t = e.touches[0]; sx = t.clientX; sy = t.clientY; clearTimeout(timer); timer = setTimeout(start, 420);
+  }, { passive: true });
+  target.addEventListener('touchmove', e => {
+    const t = e.touches[0];
+    if (!dragging) { if (Math.hypot(t.clientX - sx, t.clientY - sy) > 12) clearTimeout(timer); return; }
+    e.preventDefault(); const r = caret(t.clientX, t.clientY); if (r) win.getSelection().extend(r.startContainer, r.startOffset);   // arrastar estende a seleção
+  }, { passive: false });
+  const end = () => { clearTimeout(timer); if (dragging) { dragging = false; setTimeout(() => { selActive = false; }, 400); } };
+  target.addEventListener('touchend', end, { passive: true }); target.addEventListener('touchcancel', end, { passive: true });
+  target.addEventListener('contextmenu', e => e.preventDefault());
+}
+if (COARSE) longPressSelect($('#textLayer'), document, window, on => {
+  for (const p of ['user-select', '-webkit-user-select']) $('#textLayer').style.setProperty(p, on ? 'text' : 'none', 'important');
+  $('#textLayer').style.setProperty('-webkit-touch-callout', 'none', 'important');
+});
 
 /* ---- tela cheia no celular ---- */
 let fsTried = false;
@@ -884,7 +922,7 @@ $('#textLayer').addEventListener('click', e => {
   const w = $('#pdfWrap');
   w.addEventListener('touchstart', e => { lastTS = Date.now(); x0 = e.changedTouches[0].clientX; y0 = e.changedTouches[0].clientY; t0 = now(); }, { passive: true });
   w.addEventListener('touchend', e => {
-    if ($('#inkCv').classList.contains('on') || pdfZoom > 1.05 || pinched) return;
+    if ($('#inkCv').classList.contains('on') || pdfZoom > 1.05 || pinched || selActive) return;
     const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
     if (now() - t0 < 600 && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 2 && getSelection().isCollapsed) pdfGo(pdfPageNum + (dx < 0 ? 1 : -1));
   }, { passive: true });
@@ -908,7 +946,7 @@ function autoHideChrome() {                     // ao abrir um livro, os painéi
   ahT = setTimeout(() => { if (cur && !ink.on && $('#panel').hidden && $('#modal').hidden) toggleChrome(true); }, 3500);
 }
 $('#reader').addEventListener('pointerdown', () => clearTimeout(ahT), true);
-$('#rFull').onclick = () => toggleChrome(true);
+$('#rStats').onclick = () => openStats();
 new MutationObserver(() => { $('#mini').textContent = $('#pos').textContent; }).observe($('#pos'), { childList: true, characterData: true, subtree: true });
 $('#pdfWrap').addEventListener('click', e => {
   if (!cur || cur.kind !== 'pdf' || $('#inkCv').classList.contains('on')) return;
@@ -1148,8 +1186,6 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
     inp.oninput = () => go(+inp.value); minus.onclick = () => go(+inp.value - step); plus.onclick = () => go(+inp.value + step);
     show(); row.append(minus, inp, plus);
   };
-  mk('Fundo', [['light', 'Claro'], ['sepia', 'Sépia'], ['dark', 'Escuro'], ['black', 'Preto']], () => cfg.theme, v => { cfg.theme = v; saveCfg(); applyTheme(); applyEpubLook(true); setNightLabel(); });
-  const sb = document.createElement('button'); sb.className = 'primary'; sb.textContent = 'Estatísticas deste livro'; sb.onclick = () => { closePanel(); setTimeout(openStats, 200); }; body.appendChild(sb);
   const nb = document.createElement('div'); nb.className = 'row'; body.appendChild(nb);
   const night = document.createElement('button'); nb.appendChild(night);
   const setNightLabel = () => { night.textContent = isNightMode() ? 'Voltar ao modo dia' : 'Ativar modo noite'; night.className = isNightMode() ? 'on' : ''; };
@@ -1157,8 +1193,7 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
   const eyes = [];
   const lbl = document.createElement('label'); lbl.textContent = 'Conforto para os olhos'; body.insertBefore(lbl, nb);
   night.onclick = () => {
-    if (isNightMode()) { cfg.theme = cfg.dayTheme || 'sepia'; cfg.warm = 0; cfg.dim = 0; }
-    else { cfg.dayTheme = cfg.theme; cfg.theme = 'black'; cfg.warm = 35; cfg.dim = 15; }
+    if (isNightMode()) { cfg.warm = 0; cfg.dim = 0; } else { cfg.warm = 35; cfg.dim = 15; }
     saveCfg(); applyTheme(); applyNight(); applyEpubLook(true); closePanel(); setTimeout(() => $('#rSet').click(), 180);
   };
   slider('Brilho do app (escurecer)', 0, 70, 5, () => cfg.dim || 0, v => { cfg.dim = v; saveCfg(); applyNight(); setNightLabel(); }, v => v ? '−' + v + '%' : 'normal');
@@ -1186,23 +1221,13 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
   if (COARSE) mk('Abrir o app em tela cheia', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.autoFull !== false, v => { cfg.autoFull = v; saveCfg(); if (v) goFull(); else if (document.fullscreenElement) document.exitFullscreen(); });
   mk('Tocar nas laterais vira a página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.tapTurn !== false, v => { cfg.tapTurn = v; saveCfg(); });
   mk('Efeito de virar página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.flip !== false, v => { cfg.flip = v; saveCfg(); });
-  const row = document.createElement('div'); row.className = 'row'; body.appendChild(row);
-  const b1 = document.createElement('button'); b1.textContent = 'Esconder botões'; b1.onclick = () => { closePanel(); toggleChrome(true); };
-  row.appendChild(b1);
-  if (document.documentElement.requestFullscreen) {
-    const b2 = document.createElement('button'); b2.textContent = 'Tela cheia do navegador';
-    b2.onclick = () => { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => { }); };
-    row.appendChild(b2);
-  }
 });
 function applyNight() {
   $('#night .dim').style.opacity = String(Math.min(70, Math.max(0, cfg.dim || 0)) / 100);
   $('#night .warm').style.opacity = String(Math.min(100, Math.max(0, cfg.warm || 0)) / 100 * .8);
 }
-const isNightMode = () => cfg.theme === 'black' && (cfg.warm || 0) > 0;
-function applyTheme() { document.body.dataset.theme = cfg.theme; document.querySelector('meta[name=theme-color]').content = '#1C1D20'; }
-const THEMES = ['light', 'sepia', 'dark', 'black'];
-$('#rTheme').onclick = () => { cfg.theme = THEMES[(THEMES.indexOf(cfg.theme) + 1) % THEMES.length]; saveCfg(); applyTheme(); applyEpubLook(); toast({ light: 'Fundo claro', sepia: 'Fundo sépia', dark: 'Fundo escuro', black: 'Fundo preto' }[cfg.theme], 900); };
+const isNightMode = () => (cfg.warm || 0) > 0;
+function applyTheme() { document.body.dataset.theme = 'black'; document.querySelector('meta[name=theme-color]').content = '#1C1D20'; }
 
 /* ---- biblioteca: botões e arquivo local ---- */
 $('#q').addEventListener('input', renderLibrary);
