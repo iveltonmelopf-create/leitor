@@ -525,6 +525,7 @@ async function bookDetail(it) {
   const author = parts.length > 1 ? parts.pop() : '', title = parts.join(' - ');
   const b = getBook(it.id), pct = Math.round((b.prog?.pct || 0) * 100);
   modal('<div class="box"><div class="dh"><div id="bdCv" class="cover" style="width:176px;flex:none"></div><div style="flex:1;min-width:160px"><b id="bdT"></b><div class="au" id="bdA"></div><div class="rt" id="bdR"></div><div class="rt" id="bdC" style="margin-top:.4rem"></div></div></div><div class="rt" id="bdS" style="line-height:22px"></div><div class="dd" id="bdD" style="white-space:pre-line"></div><div class="row"><button id="bdGo" class="ok"></button><button id="bdCat">Categoria</button><span class="sp"></span><button id="bdX">Fechar</button></div></div>');
+  const ready = (!authed() && navigator.onLine && lsGet('wasLogged', false)) ? Promise.race([signIn('').catch(() => { }), sleep(6000)]) : Promise.resolve();   // login vencido: renova (o toque é o gesto que o Google exige)
   const cv = $('#bdCv'); if (it.cover) cv.style.backgroundImage = 'url(' + it.cover + ')'; else cv.textContent = kindOf(it).toUpperCase();
   $('#bdT').textContent = title; $('#bdA').textContent = author;
   $('#bdR').textContent = [kindOf(it).toUpperCase(), it.size ? (it.size / 1048576).toFixed(1) + ' MB' : '', pct ? pct + '% lido' : ''].filter(Boolean).join(' · ');
@@ -541,17 +542,17 @@ async function bookDetail(it) {
     if (nh) rows.push(['Destaques', nh + (nn ? ' (' + nn + ' com nota)' : '')]);
     const el = $('#bdS'); if (el) el.innerHTML = rows.map(r => '<div style="display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid var(--glass-line)"><span>' + r[0] + '</span><span style="color:var(--t1)">' + xmlEsc(r[1]) + '</span></div>').join('');
   };
-  paint(null); bookInfo(it).then(paint).catch(e => console.warn('info', e.message));
+  paint(null); ready.then(() => bookInfo(it)).then(paint).catch(e => console.warn('info', e.message));
   $('#bdGo').textContent = pct > 0 && pct < 97 ? 'Continuar leitura · ' + pct + '%' : 'Ler';
   $('#bdGo').onclick = () => { closeModal(); openBook(it); };
   $('#bdCat').onclick = () => catPicker(it);
   $('#bdX').onclick = closeModal;
-  if (!it.cover && !it.noCover && authed() && !it.local && (!it.size || it.size < 60e6)) fastCover(it).then(c => { if (c) { it.cover = c; const e = $('#bdCv'); if (e) { e.style.backgroundImage = 'url(' + c + ')'; e.textContent = ''; } saveState(); } }).catch(() => { });
+  if (!it.cover && !it.noCover && !it.local && (!it.size || it.size < 60e6)) ready.then(() => authed() && fastCover(it)).then(c => { if (c) { it.cover = c; const e = $('#bdCv'); if (e) { e.style.backgroundImage = 'url(' + c + ')'; e.textContent = ''; } saveState(); } }).catch(() => { });
   const set = t => { const d = $('#bdD'); if (d) d.textContent = String(t).replace(/([^\n])\n(?!\n)/g, '$1 '); };   // junta quebras de linha soltas do texto original
   const show = m => { set(m.d); const r = $('#bdR'); if (r && (m.y || m.p)) r.textContent += (r.textContent ? ' · ' : '') + [m.y, m.p ? m.p + ' páginas' : ''].filter(Boolean).join(' · '); };
   const cached = await idb.get('kv', 'syn_' + it.id).catch(() => null);
   if (cached) return show(cached);
-  set('Buscando sinopse…');
+  set('Buscando sinopse…'); await ready;
   try {
     let m = null;
     if (kindOf(it) === 'epub' && authed() && navigator.onLine) { try { const d = stripHtml(await epubDescription(it)); if (d.length > 40) m = { d }; } catch (e) { console.warn('descrição', e.message); } }
