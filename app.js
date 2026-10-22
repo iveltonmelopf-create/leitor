@@ -291,7 +291,7 @@ async function zipEntries(it) {                  // lê só o índice (diretóri
   const cdv = new DataView(cd.buffer, cd.byteOffset, cd.byteLength), dec = new TextDecoder(), map = new Map();
   for (let p = 0; p + 46 <= cd.length && cdv.getUint32(p, true) === 0x02014b50;) {
     const method = cdv.getUint16(p + 10, true), csize = cdv.getUint32(p + 20, true), n = cdv.getUint16(p + 28, true), x = cdv.getUint16(p + 30, true), c = cdv.getUint16(p + 32, true), off = cdv.getUint32(p + 42, true);
-    map.set(dec.decode(cd.subarray(p + 46, p + 46 + n)), { method, csize, off, n, x });
+    map.set(dec.decode(cd.subarray(p + 46, p + 46 + n)), { method, csize, off, n, x, usize: cdv.getUint32(p + 24, true) });
     p += 46 + n + x + c;
   }
   return map;
@@ -329,6 +329,20 @@ async function epubDescription(it) {            // sinopse que o próprio EPUB t
   if (!opfPath || !map.has(opfPath)) return '';
   const opf = dp.parseFromString(await text(opfPath), 'application/xml');
   return ([...opf.getElementsByTagName('*')].find(e => e.localName === 'description')?.textContent || '').trim();
+}
+async function bookInfo(it) {                   // páginas / tamanho do texto, lendo só o índice do arquivo (cache no aparelho)
+  const key = 'info_' + it.id, c = await idb.get('kv', key).catch(() => null); if (c) return c;
+  if (!authed() || !navigator.onLine || !it.size) return null;
+  let info = null;
+  if (kindOf(it) === 'pdf') {
+    const doc = await pdfjsLib.getDocument({ url: driveUrl(it.id), httpHeaders: { Authorization: 'Bearer ' + token }, rangeChunkSize: 131072, disableAutoFetch: true }).promise;
+    info = { pages: doc.numPages }; doc.destroy();
+  } else if (kindOf(it) === 'epub') {
+    let u = 0; for (const [n, e] of await zipEntries(it)) if (/\.(x?html?)$/i.test(n)) u += e.usize;
+    info = { chars: Math.round(u * 0.7) };          // ~30% do HTML é marcação
+  }
+  if (info) idb.set('kv', key, info).catch(() => { });
+  return info;
 }
 async function pdfThumb(doc) {
   try {
@@ -505,14 +519,29 @@ async function findSynopsis(title, author) {
   return null;
 }
 async function bookDetail(it) {
-  const raw = cleanName(it.name), i = raw.lastIndexOf(' - ');
-  const title = i > 0 ? raw.slice(0, i) : raw, author = i > 0 ? raw.slice(i + 3) : '';
+  const parts = cleanName(it.name).replace(/\s*[\(\[]\s*(z-?lib|oficial)[^\)\]]*[\)\]]/ig, '').split(' - ').map(x => x.trim()).filter(Boolean);
+  if (parts.length > 1 && /^\d{1,3}$/.test(parts[0])) parts.shift();                    // "13 - Título - Autor": tira o número
+  while (parts.length > 2 && parts[parts.length - 1].length <= 2) parts.pop();           // sobras tipo "- B"
+  const author = parts.length > 1 ? parts.pop() : '', title = parts.join(' - ');
   const b = getBook(it.id), pct = Math.round((b.prog?.pct || 0) * 100);
-  modal('<div class="box"><div class="dh"><div id="bdCv" class="cover" style="width:176px;flex:none"></div><div style="flex:1;min-width:160px"><b id="bdT"></b><div class="au" id="bdA"></div><div class="rt" id="bdR"></div><div class="rt" id="bdC" style="margin-top:.4rem"></div></div></div><div class="dd" id="bdD" style="white-space:pre-line"></div><div class="row"><button id="bdGo" class="ok"></button><button id="bdCat">Categoria</button><span class="sp"></span><button id="bdX">Fechar</button></div></div>');
+  modal('<div class="box"><div class="dh"><div id="bdCv" class="cover" style="width:176px;flex:none"></div><div style="flex:1;min-width:160px"><b id="bdT"></b><div class="au" id="bdA"></div><div class="rt" id="bdR"></div><div class="rt" id="bdC" style="margin-top:.4rem"></div></div></div><div class="rt" id="bdS" style="line-height:22px"></div><div class="dd" id="bdD" style="white-space:pre-line"></div><div class="row"><button id="bdGo" class="ok"></button><button id="bdCat">Categoria</button><span class="sp"></span><button id="bdX">Fechar</button></div></div>');
   const cv = $('#bdCv'); if (it.cover) cv.style.backgroundImage = 'url(' + it.cover + ')'; else cv.textContent = kindOf(it).toUpperCase();
   $('#bdT').textContent = title; $('#bdA').textContent = author;
   $('#bdR').textContent = [kindOf(it).toUpperCase(), it.size ? (it.size / 1048576).toFixed(1) + ' MB' : '', pct ? pct + '% lido' : ''].filter(Boolean).join(' · ');
   $('#bdC').textContent = (CATS.find(c => c[0] === catOf(it)) || [])[1] || '';
+  const fmtH = m => m >= 60 ? Math.floor(m / 60) + ' h ' + String(Math.round(m % 60)).padStart(2, '0') + ' min' : Math.max(1, Math.round(m)) + ' min';
+  const sec = S.stats?.[it.id]?.sec || 0, nh = b.hl.filter(x => !x.del).length, nn = b.hl.filter(x => !x.del && x.note).length;
+  const paint = info => {
+    const rows = [];
+    if (info?.pages) { rows.push(['Páginas', info.pages]); rows.push(['Tempo estimado', fmtH(info.pages * (cfg.pdfSec || 80) / 60)]); }
+    if (info?.chars) { rows.push(['Páginas (aprox.)', '≈ ' + Math.round(info.chars / 1800)]); rows.push(['Palavras (aprox.)', '≈ ' + Math.round(info.chars / 6).toLocaleString('pt-BR')]); rows.push(['Tempo estimado', fmtH(info.chars / (cfg.cpm || 1300))]); }
+    if (pct) rows.push(['Progresso', pct + '%']);
+    if (sec) rows.push(['Tempo já lido', fmtH(sec / 60)]);
+    if (b.prog?.t) rows.push(['Última leitura', new Date(b.prog.t).toLocaleDateString('pt-BR')]);
+    if (nh) rows.push(['Destaques', nh + (nn ? ' (' + nn + ' com nota)' : '')]);
+    const el = $('#bdS'); if (el) el.innerHTML = rows.map(r => '<div style="display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid var(--glass-line)"><span>' + r[0] + '</span><span style="color:var(--t1)">' + xmlEsc(r[1]) + '</span></div>').join('');
+  };
+  paint(null); bookInfo(it).then(paint).catch(e => console.warn('info', e.message));
   $('#bdGo').textContent = pct > 0 && pct < 97 ? 'Continuar leitura · ' + pct + '%' : 'Ler';
   $('#bdGo').onclick = () => { closeModal(); openBook(it); };
   $('#bdCat').onclick = () => catPicker(it);
