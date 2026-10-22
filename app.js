@@ -99,7 +99,12 @@ function silentRefresh(force) {
 document.addEventListener('pointerup', () => silentRefresh(), { capture: true, passive: true });
 async function api(url, opt = {}) {
   if (!authed()) throw new Error('auth');
-  const r = await fetch(url, { ...opt, headers: { ...(opt.headers || {}), Authorization: 'Bearer ' + token } });
+  let r;
+  for (let i = 0; ; i++) {                                     // 429/5xx/limite de taxa: tenta de novo com espera
+    r = await fetch(url, { ...opt, headers: { ...(opt.headers || {}), Authorization: 'Bearer ' + token } });
+    if (i < 4 && (r.status === 429 || r.status >= 500 || (r.status === 403 && /rate|quota/i.test(await r.clone().text())))) { await sleep(800 * 2 ** i); continue; }
+    break;
+  }
   if (r.status === 401) { token = null; throw new Error('auth'); }
   if (!r.ok) throw new Error('Drive ' + r.status + ': ' + (await r.text()).slice(0, 200));
   return r;
@@ -456,7 +461,7 @@ async function doSync(quiet) {
     if (n) renderLibrary();
     if (!quiet) toast(S.library.length + ' livros' + (n ? ' · ' + n + ' atualizados de outro aparelho' : ''));
   }
-  catch (e) { if (!quiet) showBanner(e.message === 'auth' ? 'Sessão expirada.' : e.message, true); else if (e.message === 'auth') b.classList.add('stale'); }
+  catch (e) { if (!quiet) showBanner(e.message === 'auth' ? 'Sessão expirada.' : e.message, true); else if (e.message === 'auth') b.classList.add('stale'); else toast('Falha ao listar o Drive: ' + e.message, 6000); }
   b.classList.remove('busy');
 }
 function showBanner(msg, withLogin) {
