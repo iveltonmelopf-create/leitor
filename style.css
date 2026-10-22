@@ -79,7 +79,7 @@ svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.75;strok
 .edge:hover{opacity:.9;background:rgba(128,128,128,.15)}
 .rfoot{display:flex;align-items:center;gap:16px;padding:8px 16px;padding-bottom:calc(8px + env(safe-area-inset-bottom));padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right));background:var(--glass);backdrop-filter:blur(20px) saturate(140%);-webkit-backdrop-filter:blur(20px) saturate(140%);border-top:1px solid var(--glass-line);color:var(--t2);flex:none}
 .rfoot input{flex:1;min-width:0}
-#pos{min-width:88px;text-align:right;font:400 13px var(--f-mono);color:var(--t2)}
+#pos{min-width:0;max-width:46vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right;font:400 13px var(--f-mono);color:var(--t2);cursor:pointer;padding:8px 0}
 #zoomBtns{display:inline-flex}
 
 input[type=range]{-webkit-appearance:none;appearance:none;height:24px;background:transparent;margin:0;cursor:pointer}
@@ -119,7 +119,7 @@ body[data-theme=black] #pdfPage{background:#000;box-shadow:none}
 
 #reader.imm .edge{display:none}
 #mini{display:none}
-#reader.imm #mini{display:block;position:absolute;right:16px;bottom:calc(8px + env(safe-area-inset-bottom));font:400 12px var(--f-mono);color:var(--n5);pointer-events:none;z-index:6}
+#reader.imm #mini{display:block;position:absolute;right:0;bottom:0;padding:8px 16px calc(8px + env(safe-area-inset-bottom)) 24px;font:400 12px var(--f-mono);color:var(--n5);cursor:pointer;z-index:6}
 
 /* ---- elementos flutuantes (vidro denso) ---- */
 #sheet{position:absolute;left:0;right:0;margin-inline:auto;width:max-content;max-width:calc(100% - 32px);bottom:calc(64px + env(safe-area-inset-bottom));z-index:20;background:var(--glass-dense);backdrop-filter:blur(20px) saturate(140%);-webkit-backdrop-filter:blur(20px) saturate(140%);border:1px solid var(--glass-line);color:var(--t2);padding:8px;border-radius:var(--r3);display:flex;align-items:center;gap:8px;box-shadow:var(--shadow)}
@@ -233,3 +233,8 @@ html{color-scheme:dark}
 #tabs button span{font:400 12px var(--f-mono);color:var(--t3);margin-left:8px}
 #tabs button.on{background:var(--acc);border-color:var(--acc);color:var(--on-acc);font-weight:700}
 #tabs button.on span{color:var(--on-acc);opacity:.75}
+
+#modal .stats{display:flex;flex-direction:column}
+#modal .srow2{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid var(--glass-line);font-size:15px;line-height:24px}
+#modal .srow2 span:first-child{color:var(--t3)}
+#modal .srow2 span:last-child{color:var(--t1);text-align:right;font-weight:500}

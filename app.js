@@ -42,7 +42,7 @@ let cfg = Object.assign({ clientId: '674620611576-d1gfmdv2t89kn9fia7rn4svli0s46m
 const saveCfg = () => lsSet('cfg', cfg);
 
 // S.library: [{id,name,mime,size,mt,cover,local}]  S.books[id]: {prog,hl,ink}  S.driveIds[id]: id do json no appData
-let S = { library: [], books: {}, driveIds: {}, crops: {} };
+let S = { library: [], books: {}, driveIds: {}, crops: {}, stats: {} };
 let dlCache = new Set(); // ids com arquivo baixado
 let saveT;
 function saveState() { clearTimeout(saveT); saveT = setTimeout(() => idb.set('kv', 'state', S).catch(() => { }), 400); }
@@ -478,6 +478,7 @@ async function getReadable(item, buf) {   // devolve o EPUB convertido quando o 
 }
 
 async function openBook(item) {
+  goFull();
   cur = { item, kind: kindOf(item) === 'pdf' ? 'pdf' : 'epub', page: 1 };
   $('#lib').hidden = true; $('#reader').hidden = false;
   $('#rTitle').textContent = cleanName(item.name);
@@ -519,6 +520,7 @@ function showSheet(p) {
   COLORS.forEach(c => { const b = document.createElement('button'); b.className = 'dot'; b.style.background = c; b.onclick = () => addHl(c, false); dots.appendChild(b); });
 }
 function hideSheet() {
+  selArmed = false;
   $('#sheet').hidden = true;
   try { if (pending?.contents) pending.contents.window.getSelection().removeAllRanges(); else getSelection().removeAllRanges(); } catch { }
   pending = null;
@@ -586,6 +588,7 @@ const EPUB_THEMES = {
 };
 async function openEpub(buf) {
   const id = cur.item.id, b = getBook(id);
+  ST = { cum: null, lens: null, total: 1, lastLoc: null, last: null, lastT: 0, lastChar: 0, n: 0, pdfSec: 0, pdfT: 0, pdfP: 0, act: Date.now() };
   ebook = ePub(buf, { openAs: 'binary' });
   rend = ebook.renderTo($('#viewer'), { width: '100%', height: '100%', flow: cfg.flow, spread: 'auto', allowScriptedContent: false });
   for (const [n, r] of Object.entries(EPUB_THEMES)) rend.themes.register(n, r);
@@ -593,16 +596,14 @@ async function openEpub(buf) {
   applyEpubLook(true);
   b.hl.filter(h => h.kind === 'epub' && !h.del).forEach(renderHl);
   rend.on('relocated', loc => {
-    epubTurn();
-    const pct = ebook.locations.length() ? ebook.locations.percentageFromCfi(loc.start.cfi) : (loc.start.percentage || 0);
-    setProg({ loc: loc.start.cfi, pct });
-    $('#slider').value = Math.round(pct * 1000); $('#pos').textContent = Math.round(pct * 100) + '%';
+    epubTurn(); onEpubRelocated(loc);
   });
   rend.on('selected', (cfi, contents) => {
+    if (!selectionAllowed(250)) { try { contents.window.getSelection().removeAllRanges(); } catch { } return; }   // só abre ao segurar
     const text = rend.getRange(cfi)?.toString().trim(); if (text) showSheet({ kind: 'epub', cfi, text, contents });
   });
   let tx = 0, ty = 0;
-  rend.on('touchstart', e => { tx = e.changedTouches[0].screenX; ty = e.changedTouches[0].screenY; });
+  rend.on('touchstart', e => { tx = e.changedTouches[0].screenX; ty = e.changedTouches[0].screenY; lastTS = Date.now(); });
   rend.on('touchend', e => {
     const dx = e.changedTouches[0].screenX - tx, dy = e.changedTouches[0].screenY - ty;
     if (cfg.flow === 'paginated' && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) dx < 0 ? next() : prev();
@@ -621,13 +622,125 @@ async function openEpub(buf) {
   ebook.ready.then(async () => {
     const key = 'loc_' + id, saved = await idb.get('kv', key);
     if (saved) ebook.locations.load(saved); else { await ebook.locations.generate(1600); idb.set('kv', key, ebook.locations.save()); }
-    const loc = rend?.currentLocation?.(); if (loc?.start) { const p = ebook.locations.percentageFromCfi(loc.start.cfi); $('#slider').value = Math.round(p * 1000); $('#pos').textContent = Math.round(p * 100) + '%'; setProg({ loc: loc.start.cfi, pct: p }, true); }
   }).catch(() => { });
+  loadSpineChars(id).then(() => { if (ST.lastLoc) onEpubRelocated(ST.lastLoc); }).catch(e => console.warn('progresso', e));
 }
 function setProg(p, keepT) {
   const b = getBook(cur.item.id); const t = keepT && b.prog ? b.prog.t : now();
   b.prog = { ...p, t }; changed();
 }
+
+/* ---- estatísticas de leitura (estilo Kindle): progresso, local, tempo restante, páginas do capítulo ---- */
+let ST = { cum: null, lens: null, total: 1, lastLoc: null, last: null, lastT: 0, lastChar: 0, n: 0, pdfSec: 0, pdfT: 0, pdfP: 0, act: Date.now() };
+const STAT_MODES = { epub: ['pct', 'loc', 'chap', 'book', 'page'], pdf: ['page', 'pct', 'book'] };
+function fmtMin(m) {
+  if (!isFinite(m)) return '—'; m = Math.max(0, Math.round(m));
+  if (m < 1) return 'menos de 1 min'; if (m < 60) return m + ' min';
+  return Math.floor(m / 60) + ' h ' + String(m % 60).padStart(2, '0') + ' min';
+}
+async function loadSpineChars(id) {            // tamanho (em caracteres) de cada parte do livro: dá o progresso real logo de cara
+  const key = 'chars1_' + id; let lens = await idb.get('kv', key);
+  if (!lens) {
+    lens = [];
+    for (const it of ebook.spine.spineItems) {
+      let n = 0;
+      try { const doc = await ebook.load(it.url); n = ((doc.body || doc.documentElement)?.textContent || '').replace(/\s+/g, ' ').length; } catch { }
+      lens.push(n);
+    }
+    idb.set('kv', key, lens);
+  }
+  ST.lens = lens; ST.cum = []; let s = 0; for (const n of lens) { ST.cum.push(s); s += n; } ST.total = s || 1;
+}
+function epubStats(loc) {
+  const st = loc.start, idx = st.index, d = st.displayed || { page: 1, total: 1 }, cpm = cfg.cpm || 1300;
+  let title = ''; try { title = ebook.navigation?.get(st.href)?.label?.trim() || ''; } catch { }
+  if (!ST.cum) return { pct: st.percentage || 0, partial: true, chapPage: d.page, chapTotal: d.total, title };
+  const chapStart = ST.cum[idx] || 0, chapChars = ST.lens[idx] || 0;
+  const frac = loc.atEnd ? 1 : (d.page - 1) / Math.max(1, d.total), charPos = Math.min(ST.total, chapStart + frac * chapChars);
+  return {
+    pct: loc.atEnd ? 1 : Math.min(1, charPos / ST.total), charPos, total: ST.total,
+    chapLeft: Math.max(0, chapStart + chapChars - charPos) / cpm, bookLeft: Math.max(0, ST.total - charPos) / cpm,
+    locNum: Math.floor(charPos / 150) + 1, locTotal: Math.ceil(ST.total / 150), chapPage: d.page, chapTotal: d.total, title
+  };
+}
+function paceSample(charPos) {                 // aprende sua velocidade de leitura
+  const t = Date.now();
+  if (ST.lastT) {
+    const dt = (t - ST.lastT) / 1000, dc = charPos - ST.lastChar;
+    if (dt > 6 && dt < 240 && dc > 80 && dc < 9000) {
+      const sm = dc / dt * 60;
+      if (sm > 300 && sm < 4500) { cfg.cpm = Math.round(.85 * (cfg.cpm || 1300) + .15 * sm); if (++ST.n % 8 === 0) saveCfg(); }
+    }
+  }
+  ST.lastT = t; ST.lastChar = charPos;
+}
+function onEpubRelocated(loc) {
+  ST.lastLoc = loc; ST.act = Date.now();
+  const s = epubStats(loc); ST.last = s;
+  if (!s.partial) paceSample(s.charPos);
+  setProg({ loc: loc.start.cfi, pct: s.pct });
+  $('#slider').value = Math.round(s.pct * 1000); renderPos();
+}
+function pdfPaceSample() {
+  const t = Date.now(), dp = pdfPageNum - ST.pdfP;
+  if (ST.pdfT && dp === 1) { const dt = (t - ST.pdfT) / 1000; if (dt > 6 && dt < 600) cfg.pdfSec = Math.round(.8 * (cfg.pdfSec || 80) + .2 * dt); }
+  ST.pdfT = t; ST.pdfP = pdfPageNum; ST.act = t;
+}
+function renderPos() {
+  if (!cur) return;
+  const k = cur.kind, modes = STAT_MODES[k], mode = modes[(cfg['sm_' + k] || 0) % modes.length]; let t = '';
+  if (k === 'epub') {
+    const s = ST.last; if (!s) return;
+    t = s.partial ? Math.round(s.pct * 100) + '%' : ({ pct: Math.round(s.pct * 100) + '%', loc: 'Local ' + s.locNum + ' de ' + s.locTotal, chap: fmtMin(s.chapLeft) + ' no capítulo', book: fmtMin(s.bookLeft) + ' no livro', page: 'Pág. ' + s.chapPage + ' de ' + s.chapTotal + ' no cap.' })[mode];
+  } else if (pdf) {
+    const n = pdf.numPages;
+    t = ({ page: pdfPageNum + ' / ' + n, pct: Math.round(pdfPageNum / n * 100) + '%', book: fmtMin((n - pdfPageNum) * (cfg.pdfSec || 80) / 60) + ' restantes' })[mode];
+  }
+  $('#pos').textContent = t; $('#pos').title = 'Toque para mudar a estatística';
+}
+$('#pos').onclick = $('#mini').onclick = () => { if (!cur) return; const k = 'sm_' + cur.kind; cfg[k] = (cfg[k] || 0) + 1; saveCfg(); renderPos(); };
+setInterval(() => {                            // tempo lido em cada livro (só conta com a tela ativa)
+  if (!cur || document.hidden || Date.now() - ST.act > 120000) return;
+  S.stats ||= {}; const o = S.stats[cur.item.id] ||= { sec: 0 }; o.sec += 10; saveState();
+}, 10000);
+['pointerdown', 'keydown', 'wheel'].forEach(ev => document.addEventListener(ev, () => { ST.act = Date.now(); }, { capture: true, passive: true }));
+function openStats() {
+  if (!cur) return; const rows = [], sec = S.stats?.[cur.item.id]?.sec || 0;
+  if (cur.kind === 'epub') {
+    const s = ST.last; if (!s) { toast('Aguarde o livro carregar…'); return; }
+    rows.push(['Progresso', Math.round(s.pct * 1000) / 10 + '%']);
+    if (!s.partial) rows.push(['Local', s.locNum + ' de ' + s.locTotal], ['Tempo restante no capítulo', fmtMin(s.chapLeft)], ['Tempo restante no livro', fmtMin(s.bookLeft)]);
+    if (s.title) rows.push(['Capítulo', s.title]);
+    rows.push(['Página no capítulo', s.chapPage + ' de ' + s.chapTotal]);
+    if (!s.partial) rows.push(['Tamanho do livro', '≈ ' + Math.round(s.total / 1800) + ' páginas'], ['Sua velocidade', '≈ ' + Math.round((cfg.cpm || 1300) / 6) + ' palavras por minuto']);
+  } else if (pdf) {
+    const n = pdf.numPages;
+    rows.push(['Página', pdfPageNum + ' de ' + n], ['Progresso', Math.round(pdfPageNum / n * 1000) / 10 + '%'], ['Tempo restante no livro', fmtMin((n - pdfPageNum) * (cfg.pdfSec || 80) / 60)], ['Sua velocidade', '≈ ' + Math.round(3600 / (cfg.pdfSec || 80)) + ' páginas por hora']);
+  }
+  rows.push(['Tempo lido neste livro', fmtMin(sec / 60)]);
+  modal('<div class="box"><b></b><div class="stats"></div><div class="row"><span class="sp"></span><button id="stX" class="ok">Fechar</button></div></div>');
+  $('#modal b').textContent = 'Estatísticas de leitura';
+  const box = $('#modal .stats');
+  for (const [k, v] of rows) { const r = document.createElement('div'); r.className = 'srow2'; const a = document.createElement('span'), b = document.createElement('span'); a.textContent = k; b.textContent = v; r.append(a, b); box.appendChild(r); }
+  $('#stX').onclick = closeModal;
+}
+
+/* ---- seleção de texto só segurando (celular) ---- */
+const COARSE = matchMedia('(pointer: coarse)').matches;
+let lastTS = 0, selArmed = false;
+function selectionAllowed(delay) {             // no toque simples não seleciona; só depois de segurar ~0,4 s
+  if (!COARSE || selArmed) return true;
+  if (Date.now() - (delay || 0) - lastTS >= 400) { selArmed = true; return true; }
+  return false;
+}
+
+/* ---- tela cheia no celular ---- */
+let fsTried = false;
+function goFull() {
+  if (!COARSE || cfg.autoFull === false || document.fullscreenElement || matchMedia('(display-mode: fullscreen)').matches) return;
+  try { document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => { }); } catch { }
+}
+document.addEventListener('pointerdown', () => { if (!fsTried) { fsTried = true; goFull(); } }, { capture: true, passive: true });
 
 /* ---- PDF ---- */
 async function openPdf(buf) {
@@ -705,7 +818,7 @@ async function renderPdfPage() {
   try { await r.promise; } catch { }
   wrap.scrollTop = 0;
   if (!pdf || !cur) return;
-  $('#slider').value = pdfPageNum; $('#pos').textContent = pdfPageNum + ' / ' + pdf.numPages;
+  $('#slider').value = pdfPageNum; pdfPaceSample(); renderPos();
   setProg({ page: pdfPageNum, pct: pdfPageNum / pdf.numPages });
 }
 function flipOverlay(dir) {
@@ -750,10 +863,11 @@ function drawPdfHl() {
 }
 document.addEventListener('selectionchange', () => {
   if (!pdf || !cur || cur.kind !== 'pdf') return;
+  { const s0 = getSelection(); if (s0 && !s0.isCollapsed && s0.anchorNode && $('#textLayer').contains(s0.anchorNode) && !selectionAllowed()) { s0.removeAllRanges(); return; } }
   clearTimeout(document._st);
   document._st = setTimeout(() => {
     const s = getSelection();
-    if (!s || s.isCollapsed || !s.anchorNode || !$('#textLayer').contains(s.anchorNode)) { if (pending?.kind === 'pdf') { $('#sheet').hidden = true; pending = null; } return; }
+    if (!s || s.isCollapsed || !s.anchorNode || !$('#textLayer').contains(s.anchorNode)) { if (pending?.kind === 'pdf') { $('#sheet').hidden = true; pending = null; } selArmed = false; return; }
     const text = s.toString().trim(); if (text) showSheet({ kind: 'pdf', text });
   }, 350);
 });
@@ -768,7 +882,7 @@ $('#textLayer').addEventListener('click', e => {
 {
   let x0 = 0, y0 = 0, t0 = 0;
   const w = $('#pdfWrap');
-  w.addEventListener('touchstart', e => { x0 = e.changedTouches[0].clientX; y0 = e.changedTouches[0].clientY; t0 = now(); }, { passive: true });
+  w.addEventListener('touchstart', e => { lastTS = Date.now(); x0 = e.changedTouches[0].clientX; y0 = e.changedTouches[0].clientY; t0 = now(); }, { passive: true });
   w.addEventListener('touchend', e => {
     if ($('#inkCv').classList.contains('on') || pdfZoom > 1.05 || pinched) return;
     const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
@@ -943,6 +1057,7 @@ $('#slider').addEventListener('change', e => {
   const v = +e.target.value;
   if (cur.kind === 'pdf') pdfGo(v);
   else if (ebook?.locations.length()) rend.display(ebook.locations.cfiFromPercentage(v / 1000));
+  else if (ST.cum) { const target = v / 1000 * ST.total; let i = ST.cum.length - 1; while (i > 0 && ST.cum[i] > target) i--; rend.display(ebook.spine.get(i).href); }
 });
 $('#rToc').onclick = async () => {
   openPanel('Sumário', async body => {
@@ -1034,6 +1149,7 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
     show(); row.append(minus, inp, plus);
   };
   mk('Fundo', [['light', 'Claro'], ['sepia', 'Sépia'], ['dark', 'Escuro'], ['black', 'Preto']], () => cfg.theme, v => { cfg.theme = v; saveCfg(); applyTheme(); applyEpubLook(true); setNightLabel(); });
+  const sb = document.createElement('button'); sb.className = 'primary'; sb.textContent = 'Estatísticas deste livro'; sb.onclick = () => { closePanel(); setTimeout(openStats, 200); }; body.appendChild(sb);
   const nb = document.createElement('div'); nb.className = 'row'; body.appendChild(nb);
   const night = document.createElement('button'); nb.appendChild(night);
   const setNightLabel = () => { night.textContent = isNightMode() ? 'Voltar ao modo dia' : 'Ativar modo noite'; night.className = isNightMode() ? 'on' : ''; };
@@ -1067,6 +1183,7 @@ $('#rSet').onclick = () => openPanel('Aparência e leitura', body => {
     const h = document.createElement('div'); h.className = 'help';
     h.innerHTML = 'PDF não reorganiza o texto: para letras maiores use <b>Sem margens</b> (corta o branco das bordas) e aumente o <b>zoom</b>. No celular, pinça com dois dedos também ajusta. No computador: roda do mouse vira a página, Ctrl + roda dá zoom, setas/Espaço viram página, + e − dão zoom, F esconde os botões.'; body.appendChild(h);
   }
+  if (COARSE) mk('Abrir o app em tela cheia', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.autoFull !== false, v => { cfg.autoFull = v; saveCfg(); if (v) goFull(); else if (document.fullscreenElement) document.exitFullscreen(); });
   mk('Tocar nas laterais vira a página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.tapTurn !== false, v => { cfg.tapTurn = v; saveCfg(); });
   mk('Efeito de virar página', [[true, 'Ligado'], [false, 'Desligado']], () => cfg.flip !== false, v => { cfg.flip = v; saveCfg(); });
   const row = document.createElement('div'); row.className = 'row'; body.appendChild(row);
