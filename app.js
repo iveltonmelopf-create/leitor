@@ -173,24 +173,57 @@ async function syncBook(id) {
       did = l[0]?.id; if (did) S.driveIds[id] = did;
     }
     let remote = null;
-    if (did) remote = await (await api('https://www.googleapis.com/drive/v3/files/' + did + '?alt=media')).json();
+    if (did) {
+      try { remote = await (await api('https://www.googleapis.com/drive/v3/files/' + did + '?alt=media')).json(); }
+      catch (e) { if (/Drive 404/.test(e.message)) { delete S.driveIds[id]; did = null; } else throw e; }   // arquivo apagado: recria
+    }
     const merged = mergeBook(b, remote);
     const body = serialize(merged);
     if (!remote || body !== JSON.stringify(remote)) {
       const boundary = 'b' + uid();
       const meta = did ? {} : { name: 'book_' + id + '.json', parents: ['appDataFolder'] };
       const payload = '--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + JSON.stringify(meta) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + body + '\r\n--' + boundary + '--';
-      const url = did ? 'https://www.googleapis.com/upload/drive/v3/files/' + did + '?uploadType=multipart&fields=id' : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id';
+      const url = did ? 'https://www.googleapis.com/upload/drive/v3/files/' + did + '?uploadType=multipart&fields=id,modifiedTime' : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime';
       const j = await (await api(url, { method: did ? 'PATCH' : 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body: payload })).json();
-      S.driveIds[id] = j.id;
+      S.driveIds[id] = j.id; (S.bookMt ||= {})[id] = j.modifiedTime;
     }
     S.books[id] = merged; saveState(); DIRTY.delete(id); saveDirty();
   } catch (e) { console.warn('sync', e); }
   finally { syncing.delete(id); }
 }
+/* baixa o progresso/destaques de TODOS os livros que outro aparelho salvou (só os que mudaram) */
+async function pullAll() {
+  const files = await listAll("'appDataFolder' in parents and name contains 'book_'", 'id,name,modifiedTime', 'appDataFolder');
+  const mt = (S.bookMt ||= {}), todo = [];
+  for (const f of files) {
+    const id = f.name.replace(/^book_/, '').replace(/\.json$/, ''); if (!id) continue;
+    S.driveIds[id] = f.id;
+    if (mt[id] !== f.modifiedTime) todo.push([id, f]);
+  }
+  let n = 0;
+  const work = async () => {
+    for (let it; (it = todo.shift());) {
+      const [id, f] = it;
+      try {
+        const remote = await (await api('https://www.googleapis.com/drive/v3/files/' + f.id + '?alt=media')).json();
+        if (cur && cur.item.id === id) { mt[id] = f.modifiedTime; continue; }          // livro aberto: o syncBook cuida
+        const l = getBook(id), merged = mergeBook(l, remote);
+        if (serialize(merged) !== JSON.stringify(remote)) { DIRTY.add(id); saveDirty(); }
+        if (JSON.stringify(merged.prog) !== JSON.stringify(l.prog) || merged.hl.length !== l.hl.length || merged.ink.length !== l.ink.length) n++;
+        S.books[id] = merged; mt[id] = f.modifiedTime;
+      } catch (e) { if (e.message === 'auth') throw e; console.warn('pull', id, e.message); }
+    }
+  };
+  await Promise.all([work(), work(), work(), work()]);
+  saveState(); return n;
+}
 function scheduleSync(id) { clearTimeout(syncTimers[id]); syncTimers[id] = setTimeout(() => syncBook(id), 5000); }
 function changed() { saveState(); if (cur) { DIRTY.add(cur.item.id); saveDirty(); scheduleSync(cur.item.id); } }
-document.addEventListener('visibilitychange', () => { if (document.hidden && cur) { saveState(); syncBook(cur.item.id); } });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (cur) { saveState(); syncBook(cur.item.id); } }
+  else if (!cur && authed() && !$('#lib').hidden && Date.now() - (visibilitychange.last || 0) > 60000) { visibilitychange.last = Date.now(); doSync(true); }   // voltou ao app: puxa o que outro aparelho mudou
+});
+const visibilitychange = { last: 0 };
 
 /* ---------- download de arquivos ---------- */
 async function getFileBuf(item, silent) {
@@ -416,7 +449,13 @@ function cardMenu(it) {
 }
 async function doSync(quiet) {
   const b = $('#bSync'); b.classList.add('busy');
-  try { await refreshLibrary(); hideBanner(); b.classList.remove('stale'); renderLibrary(); if (!quiet) toast(S.library.length + ' livros'); genCovers(); }
+  try {
+    await refreshLibrary(); hideBanner(); b.classList.remove('stale'); renderLibrary(); genCovers();
+    let n = 0; try { n = await pullAll(); } catch (e) { if (e.message === 'auth') throw e; console.warn('pullAll', e); }
+    for (const id of [...DIRTY]) if (!cur || cur.item.id !== id) syncBook(id);
+    if (n) renderLibrary();
+    if (!quiet) toast(S.library.length + ' livros' + (n ? ' · ' + n + ' atualizados de outro aparelho' : ''));
+  }
   catch (e) { if (!quiet) showBanner(e.message === 'auth' ? 'Sessão expirada.' : e.message, true); else if (e.message === 'auth') b.classList.add('stale'); }
   b.classList.remove('busy');
 }
@@ -547,6 +586,7 @@ async function openBook(item) {
   let buf;
   try { buf = await getFileBuf(item); }
   catch (e) { toast(e.message === 'auth' ? 'Entre com o Google (⚙) para baixar.' : e.message); closeReader(); return; }
+  if (!authed() && navigator.onLine && lsGet('wasLogged', false)) await Promise.race([signIn('').catch(() => { }), sleep(8000)]);
   if (authed() && navigator.onLine) await Promise.race([syncBook(item.id), sleep(4000)]);
   try { buf = await getReadable(item, buf); cur.kind === 'pdf' ? await openPdf(buf) : await openEpub(buf); autoHideChrome(); }
   catch (e) { console.error(e); toast('Não consegui abrir: ' + e.message, 6000); closeReader(); }
