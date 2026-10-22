@@ -90,7 +90,7 @@ function signIn(prompt = '') {
 let refreshing = null, lastTry = 0;
 function silentRefresh(force) {
   if (authed() || refreshing || !cfg.clientId || !navigator.onLine || !lsGet('wasLogged', false)) return;
-  if (cur && !force) return;                                 // lendo: não interrompe
+  if (cur && !force && !(DIRTY.size && Date.now() - lastTry > 600000)) return;   // lendo: só interrompe se há alterações sem enviar
   if (Date.now() - lastTry < 120000) return; lastTry = Date.now();
   refreshing = signIn('').then(() => {
     hideBanner(); $('#bSync').classList.remove('stale'); doSync(true); for (const id of [...DIRTY]) syncBook(id);
@@ -164,11 +164,14 @@ function mergeBook(l, r) {
   if (!r) return l;
   return { prog: (r.prog && (!l.prog || r.prog.t > l.prog.t)) ? r.prog : l.prog, hl: mergeArr(l.hl, r.hl), ink: mergeArr(l.ink, r.ink) };
 }
+const SYNC = lsGet('syncst', {});                // diagnóstico: último envio/recebimento e último erro
+const saveSync = () => lsSet('syncst', SYNC);
 const DIRTY = new Set(lsGet('dirty', []));
 const saveDirty = () => lsSet('dirty', [...DIRTY]);
 let syncing = new Set(), syncTimers = {};
 async function syncBook(id) {
-  if (!authed() || !navigator.onLine || syncing.has(id)) return;
+  if (!authed()) { SYNC.err = 'login expirado — nada foi enviado'; SYNC.errT = now(); saveSync(); $('#bSync')?.classList.add('stale'); return; }
+  if (!navigator.onLine || syncing.has(id)) return;
   syncing.add(id);
   try {
     const b = getBook(id);
@@ -190,10 +193,11 @@ async function syncBook(id) {
       const payload = '--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + JSON.stringify(meta) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + body + '\r\n--' + boundary + '--';
       const url = did ? 'https://www.googleapis.com/upload/drive/v3/files/' + did + '?uploadType=multipart&fields=id,modifiedTime' : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime';
       const j = await (await api(url, { method: did ? 'PATCH' : 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body: payload })).json();
-      S.driveIds[id] = j.id; (S.bookMt ||= {})[id] = j.modifiedTime;
+      S.driveIds[id] = j.id; (S.bookMt ||= {})[id] = j.modifiedTime; SYNC.push = now();
     }
+    SYNC.ok = now(); SYNC.err = null; saveSync();
     S.books[id] = merged; saveState(); DIRTY.delete(id); saveDirty();
-  } catch (e) { console.warn('sync', e); }
+  } catch (e) { console.warn('sync', e); SYNC.err = (e.message === 'auth' ? 'login expirado' : e.message); SYNC.errT = now(); saveSync(); }
   finally { syncing.delete(id); }
 }
 /* baixa o progresso/destaques de TODOS os livros que outro aparelho salvou (só os que mudaram) */
@@ -220,7 +224,7 @@ async function pullAll() {
     }
   };
   await Promise.all([work(), work(), work(), work()]);
-  saveState(); return n;
+  SYNC.pull = now(); SYNC.pullN = files.length; saveSync(); saveState(); return n;
 }
 function scheduleSync(id) { clearTimeout(syncTimers[id]); syncTimers[id] = setTimeout(() => syncBook(id), 5000); }
 function changed() { saveState(); if (cur) { DIRTY.add(cur.item.id); saveDirty(); scheduleSync(cur.item.id); } }
@@ -490,10 +494,25 @@ function openSettings() {
       <label>Client ID do Google (OAuth, tipo "Aplicativo da Web")</label><input id="sCid" type="text" placeholder="123456-abc.apps.googleusercontent.com">
       <label>Pasta do Drive com os livros (nome, link ou ID — vazio = pasta oficial)</label><input id="sFolder" type="text" placeholder="Livros">
       <button class="primary" id="sSave">Salvar e entrar</button>
+      <label>Sincronização entre aparelhos</label><div class="help" id="sSync"></div><button id="sSyncBtn" class="primary">Sincronizar agora</button>
       <label>Capas dos livros</label><div class="help" id="sCov"></div><button id="sCovBtn" class="primary">Buscar capas agora</button>
       <button id="sOut" style="margin:.2rem .4rem">Sair da conta neste aparelho</button>
       <div class="help">Aparência (tema, fonte, modo de rolagem) fica no botão <b>Aa</b> dentro do livro.<br>O progresso, os destaques, as notas e a tinta da caneta ficam na área privada do app no seu Drive (não aparecem nos seus arquivos).</div>`;
     $('#sCid').value = cfg.clientId; $('#sFolder').value = cfg.folder;
+    const fmt = t => t ? new Date(t).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : 'nunca';
+    const showSync = () => { $('#sSync').innerHTML = 'Login: <b>' + (authed() ? 'ativo' : 'expirado') + '</b><br>Último envio: ' + fmt(SYNC.push) + '<br>Última checagem: ' + fmt(SYNC.ok) + '<br>Último recebimento: ' + fmt(SYNC.pull) + (SYNC.pullN != null ? ' (' + SYNC.pullN + ' livros com progresso na nuvem)' : '') + '<br>Aguardando envio: ' + DIRTY.size + (SYNC.err ? '<br><b>Erro: ' + xmlEsc(SYNC.err) + '</b> (' + fmt(SYNC.errT) + ')' : ''); };
+    showSync();
+    $('#sSyncBtn').onclick = async () => {
+      const b = $('#sSyncBtn'); b.disabled = true; b.textContent = 'Sincronizando…';
+      try {
+        if (!authed()) await signIn('');
+        await refreshLibrary(); renderLibrary();
+        const n = await pullAll();
+        for (const id of [...DIRTY]) await syncBook(id);
+        SYNC.err = null; saveSync(); toast(n + ' livros atualizados de outro aparelho', 3000);
+      } catch (e) { SYNC.err = e.message === 'auth' ? 'login expirado' : e.message; SYNC.errT = now(); saveSync(); }
+      b.disabled = false; b.textContent = 'Sincronizar agora'; showSync();
+    };
     const nd = S.library.filter(x => !x.local), nc = nd.filter(x => x.cover).length, nn = nd.filter(x => !x.cover && x.noCover).length;
     $('#sCov').textContent = nc + ' de ' + nd.length + ' livros do Drive com capa' + (nn ? ' · ' + nn + ' sem imagem de capa no arquivo' : '') + '.';
     $('#sCovBtn').onclick = () => { S.library.forEach(x => { if (!x.cover) x.noCover = false; }); closePanel(); genCovers(true); };
@@ -582,7 +601,7 @@ async function getReadable(item, buf) {   // devolve o EPUB convertido quando o 
 
 async function openBook(item) {
   goFull();
-  cur = { item, kind: kindOf(item) === 'pdf' ? 'pdf' : 'epub', page: 1 };
+  cur = { item, kind: kindOf(item) === 'pdf' ? 'pdf' : 'epub', page: 1, openedAt: Date.now() };
   $('#lib').hidden = true; $('#reader').hidden = false;
   $('#rTitle').textContent = cleanName(item.name);
   $('#viewer').hidden = cur.kind !== 'epub'; $('#pdfWrap').hidden = cur.kind !== 'pdf';
@@ -592,7 +611,8 @@ async function openBook(item) {
   try { buf = await getFileBuf(item); }
   catch (e) { toast(e.message === 'auth' ? 'Entre com o Google (⚙) para baixar.' : e.message); closeReader(); return; }
   if (!authed() && navigator.onLine && lsGet('wasLogged', false)) await Promise.race([signIn('').catch(() => { }), sleep(8000)]);
-  if (authed() && navigator.onLine) await Promise.race([syncBook(item.id), sleep(4000)]);
+  if (authed() && navigator.onLine) { await Promise.race([syncBook(item.id), sleep(10000)]); cur && (cur.openedAt = Date.now()); }
+  else if (navigator.onLine) toast('Sem login: abrindo com a posição deste aparelho', 3000);
   try { buf = await getReadable(item, buf); cur.kind === 'pdf' ? await openPdf(buf) : await openEpub(buf); autoHideChrome(); }
   catch (e) { console.error(e); toast('Não consegui abrir: ' + e.message, 6000); closeReader(); }
 }
@@ -735,8 +755,13 @@ async function openEpub(buf) {
   loadSpineChars(id).then(() => { if (ST.lastLoc) onEpubRelocated(ST.lastLoc); }).catch(e => console.warn('progresso', e));
 }
 function setProg(p, keepT) {
-  const b = getBook(cur.item.id); const t = keepT && b.prog ? b.prog.t : now();
-  b.prog = { ...p, t }; changed();
+  const b = getBook(cur.item.id);
+  if (!b.prog && Date.now() - (cur.openedAt || 0) < 4000) return;      // posição inicial automática: não é leitura, não cria progresso
+  const same = b.prog && (p.loc ? p.loc === b.prog.loc : p.page === b.prog.page);
+  if (same) keepT = true;                                                // reabrir no mesmo ponto não "ganha" do outro aparelho
+  const t = keepT && b.prog ? b.prog.t : now();
+  const unchanged = same && Math.abs((b.prog.pct || 0) - (p.pct || 0)) < 0.0005;
+  b.prog = { ...p, t }; if (!unchanged) changed();
 }
 
 /* ---- estatísticas de leitura (estilo Kindle): progresso, local, tempo restante, páginas do capítulo ---- */
