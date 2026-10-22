@@ -321,6 +321,15 @@ async function epubCoverByRange(it) {
   const url = URL.createObjectURL(new Blob([await zipRead(it, ent)], { type: ci.getAttribute('media-type') || 'image/jpeg' }));
   try { return thumbFrom(await loadImg(url)); } finally { URL.revokeObjectURL(url); }
 }
+async function epubDescription(it) {            // sinopse que o próprio EPUB traz nos metadados (dc:description)
+  const map = await zipEntries(it), dec = new TextDecoder(), dp = new DOMParser();
+  const text = async name => dec.decode(await zipRead(it, map.get(name)));
+  if (!map.has('META-INF/container.xml')) return '';
+  const opfPath = dp.parseFromString(await text('META-INF/container.xml'), 'application/xml').querySelector('rootfile')?.getAttribute('full-path');
+  if (!opfPath || !map.has(opfPath)) return '';
+  const opf = dp.parseFromString(await text(opfPath), 'application/xml');
+  return ([...opf.getElementsByTagName('*')].find(e => e.localName === 'description')?.textContent || '').trim();
+}
 async function pdfThumb(doc) {
   try {
     const pg = await doc.getPage(1), vp = pg.getViewport({ scale: 220 / pg.getViewport({ scale: 1 }).width });
@@ -456,7 +465,7 @@ function renderLibrary() {
     const hc = h.querySelector('.cover'); if (hero.cover) hc.style.backgroundImage = 'url(' + hero.cover + ')'; else hc.textContent = kindOf(hero).toUpperCase();
     h.querySelector('.cap').textContent = 'Continuar de onde parou' + (hp ? ' · ' + hp + '%' : '');
     h.querySelector('h2').textContent = cleanName(hero.name); h.querySelector('.prog i').style.width = hp + '%';
-    h.addEventListener('click', () => openBook(hero)); grid.appendChild(h);
+    h.addEventListener('click', () => bookDetail(hero)); h.querySelector('.go').addEventListener('click', e => { e.stopPropagation(); openBook(hero); }); grid.appendChild(h);
     if (list.length > 1) { const s = document.createElement('div'); s.className = 'sect'; s.textContent = 'Outros em andamento'; grid.appendChild(s); }
   }
   let shown = 0; const CH = 240, mkCard = it => {
@@ -468,7 +477,7 @@ function renderLibrary() {
     d.querySelector('.t').textContent = cleanName(it.name);
     d.querySelector('.prog i').style.width = pct + '%';
     d.title = cleanName(it.name) + (pct ? ' — ' + pct + '%' : '');
-    d.addEventListener('click', () => openBook(it));
+    d.addEventListener('click', () => bookDetail(it));
     d.addEventListener('contextmenu', e => { e.preventDefault(); cardMenu(it); });
     let lp; d.addEventListener('touchstart', () => lp = setTimeout(() => cardMenu(it), 650), { passive: true });
     ['touchend', 'touchmove'].forEach(ev => d.addEventListener(ev, () => clearTimeout(lp), { passive: true }));
@@ -481,6 +490,45 @@ function renderLibrary() {
     if (shown < list.length) { const sn = document.createElement('div'); sn.style.cssText = 'grid-column:1/-1;height:1px'; grid.appendChild(sn); new IntersectionObserver((es, ob) => { if (es[0].isIntersecting) { ob.disconnect(); sn.remove(); more(); } }, { root: grid, rootMargin: '1200px' }).observe(sn); }
   };
   more();
+}
+/* ---- detalhe do livro: capa grande + sinopse (Google Livros, guardada no aparelho); a leitura só começa em "Ler" ---- */
+const stripHtml = h => String(h || '').replace(/<\s*(br|\/p|\/div|\/li)\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\n{3,}/g, '\n\n').trim();
+async function findSynopsis(title, author) {
+  const t = title.replace(/[\(\[].*?[\)\]]/g, '').replace(/\s+/g, ' ').trim() || title;
+  const q = 'intitle:"' + t + '"' + (author ? ' inauthor:"' + author.replace(/[\(\[].*?[\)\]]/g, '').trim() + '"' : '');
+  for (const lang of ['&langRestrict=pt', '']) {
+    const r = await fetch('https://www.googleapis.com/books/v1/volumes?q=' + encodeURIComponent(q) + '&maxResults=6&printType=books' + lang + '&fields=items(volumeInfo(title,authors,description,pageCount,publishedDate))', authed() ? { headers: { Authorization: 'Bearer ' + token } } : {});   // com o login, usa a cota do projeto do app
+    if (!r.ok) continue;
+    const it = ((await r.json()).items || []).map(x => x.volumeInfo).find(v => v && v.description);
+    if (it) return { d: stripHtml(it.description), p: it.pageCount || 0, y: (it.publishedDate || '').slice(0, 4), a: (it.authors || []).join(', ') };
+  }
+  return null;
+}
+async function bookDetail(it) {
+  const raw = cleanName(it.name), i = raw.lastIndexOf(' - ');
+  const title = i > 0 ? raw.slice(0, i) : raw, author = i > 0 ? raw.slice(i + 3) : '';
+  const b = getBook(it.id), pct = Math.round((b.prog?.pct || 0) * 100);
+  modal('<div class="box"><div class="dh"><div id="bdCv" class="cover" style="width:176px;flex:none"></div><div style="flex:1;min-width:160px"><b id="bdT"></b><div class="au" id="bdA"></div><div class="rt" id="bdR"></div><div class="rt" id="bdC" style="margin-top:.4rem"></div></div></div><div class="dd" id="bdD" style="white-space:pre-line"></div><div class="row"><button id="bdGo" class="ok"></button><button id="bdCat">Categoria</button><span class="sp"></span><button id="bdX">Fechar</button></div></div>');
+  const cv = $('#bdCv'); if (it.cover) cv.style.backgroundImage = 'url(' + it.cover + ')'; else cv.textContent = kindOf(it).toUpperCase();
+  $('#bdT').textContent = title; $('#bdA').textContent = author;
+  $('#bdR').textContent = [kindOf(it).toUpperCase(), it.size ? (it.size / 1048576).toFixed(1) + ' MB' : '', pct ? pct + '% lido' : ''].filter(Boolean).join(' · ');
+  $('#bdC').textContent = (CATS.find(c => c[0] === catOf(it)) || [])[1] || '';
+  $('#bdGo').textContent = pct > 0 && pct < 97 ? 'Continuar leitura · ' + pct + '%' : 'Ler';
+  $('#bdGo').onclick = () => { closeModal(); openBook(it); };
+  $('#bdCat').onclick = () => catPicker(it);
+  $('#bdX').onclick = closeModal;
+  const set = t => { const d = $('#bdD'); if (d) d.textContent = t; };
+  const show = m => { set(m.d); const r = $('#bdR'); if (r && (m.y || m.p)) r.textContent += (r.textContent ? ' · ' : '') + [m.y, m.p ? m.p + ' páginas' : ''].filter(Boolean).join(' · '); };
+  const cached = await idb.get('kv', 'syn_' + it.id).catch(() => null);
+  if (cached) return show(cached);
+  set('Buscando sinopse…');
+  try {
+    let m = null;
+    if (kindOf(it) === 'epub' && authed() && navigator.onLine) { try { const d = stripHtml(await epubDescription(it)); if (d.length > 40) m = { d }; } catch (e) { console.warn('descrição', e.message); } }
+    if (!m && navigator.onLine) m = await findSynopsis(title, author).catch(() => null);
+    if (m) { idb.set('kv', 'syn_' + it.id, m).catch(() => { }); show(m); }
+    else set(navigator.onLine ? 'Sinopse não encontrada para este livro.' : 'Sem internet para buscar a sinopse.');
+  } catch { set('Não consegui buscar a sinopse agora.'); }
 }
 function cardMenu(it) {
   modal(`<div class="box"><b></b><div class="row"><button id="mCat">Categoria</button><button id="mDel" class="danger">${dlCache.has(it.id) ? 'Remover cópia offline' : ''}</button>${it.local ? '<button id="mRm" class="danger">Remover da estante</button>' : ''}<span class="sp"></span><button id="mX">Fechar</button></div></div>`);
