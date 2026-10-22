@@ -373,6 +373,23 @@ async function genCovers(manual) {
   finally { covering = false; saveState(); if (!cur && !$('#lib').hidden) renderLibrary(); toast('Capas: ' + ok + ' encontradas' + (fail ? ', ' + fail + ' sem capa' : '') + (lastErr ? ' (' + lastErr.slice(0, 60) + ')' : ''), 6000); }
 }
 
+/* capas sob demanda: só dos livros que aparecem na tela (e um pouco além), os de baixo ficam para quando você rolar */
+const coverQ = []; let coverBusy = 0, coverSaveT = 0;
+const coverObs = new IntersectionObserver(es => {
+  for (const e of es) {
+    if (!e.isIntersecting) continue; coverObs.unobserve(e.target);
+    const it = e.target._it; if (it && !it.cover && !it.noCover && !it.local && (!it.size || it.size < 60e6) && !coverQ.includes(it)) coverQ.push(it);
+  }
+  pumpCovers();
+}, { root: $('#grid'), rootMargin: '500px' });
+function pumpCovers() {
+  while (coverBusy < 5 && coverQ.length && authed() && navigator.onLine && !cur && !covering) {
+    const it = coverQ.pop(); coverBusy++;                       // o último a aparecer é o primeiro a buscar
+    fastCover(it).then(cv => { if (cv) { it.cover = cv; const c = it._el?.querySelector('.cover'); if (c) { c.style.backgroundImage = 'url(' + cv + ')'; c.textContent = ''; } } else it.noCover = true; })
+      .catch(e => { if (e.message !== 'auth' && !/Drive (429|5\d\d)|Failed to fetch/.test(e.message)) it.noCover = true; })
+      .finally(() => { coverBusy--; clearTimeout(coverSaveT); coverSaveT = setTimeout(saveState, 3000); pumpCovers(); });
+  }
+}
 /* ---------- categorias ---------- */
 const CATOV = lsGet('catov', {});               // correções feitas à mão (pelo nome do livro)
 function catOf(it) {
@@ -408,7 +425,7 @@ function catPicker(it) {
 
 /* ---------- estante ---------- */
 function renderLibrary() {
-  const grid = $('#grid'); grid.innerHTML = '';
+  const grid = $('#grid'); grid.innerHTML = ''; coverObs.disconnect(); coverQ.length = 0;
   const q = $('#q').value.trim().toLowerCase();
   const pct = x => getBook(x.id).prog?.pct || 0, started = x => !!getBook(x.id).prog?.t;
   const reading = S.library.filter(x => started(x) && pct(x) < .97).sort((a, b) => (getBook(b.id).prog?.t || 0) - (getBook(a.id).prog?.t || 0));
@@ -456,6 +473,7 @@ function renderLibrary() {
     let lp; d.addEventListener('touchstart', () => lp = setTimeout(() => cardMenu(it), 650), { passive: true });
     ['touchend', 'touchmove'].forEach(ev => d.addEventListener(ev, () => clearTimeout(lp), { passive: true }));
     grid.appendChild(d);
+    if (!it.cover && !it.noCover && !it.local) { d._it = it; it._el = d; coverObs.observe(d); }
   };
   const more = () => {                               // estante enorme: desenha aos poucos
     const end = Math.min(list.length, shown + CH);
@@ -476,7 +494,7 @@ function cardMenu(it) {
 async function doSync(quiet) {
   const b = $('#bSync'); b.classList.add('busy');
   try {
-    await refreshLibrary(); hideBanner(); b.classList.remove('stale'); renderLibrary(); genCovers();
+    await refreshLibrary(); hideBanner(); b.classList.remove('stale'); renderLibrary();
     let n = 0; try { n = await pullAll(); } catch (e) { if (e.message === 'auth') throw e; console.warn('pullAll', e); }
     for (const id of [...DIRTY]) if (!cur || cur.item.id !== id) syncBook(id);
     if (n) renderLibrary();
@@ -1477,7 +1495,7 @@ window.addEventListener('online', () => { if (cur) syncBook(cur.item.id); });
   applyTheme(); applyNight(); renderLibrary();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
   if (cfg.clientId && navigator.onLine) {
-    if (authed()) { doSync(true); genCovers(); }
+    if (authed()) doSync(true);
     else if (lsGet('wasLogged', false)) $('#bSync').classList.add('stale');      // renova sozinho no primeiro toque
     else showBanner('Entre com o Google para ver os livros do Drive.', true);
   } else if (!cfg.clientId) showBanner('Configure o Client ID do Google (⚙) para sincronizar com o Drive.', false);
