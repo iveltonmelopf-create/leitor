@@ -383,8 +383,7 @@ function renderLibrary() {
     h.addEventListener('click', () => openBook(hero)); grid.appendChild(h);
     if (list.length > 1) { const s = document.createElement('div'); s.className = 'sect'; s.textContent = 'Outros em andamento'; grid.appendChild(s); }
   }
-  for (const it of list) {
-    if (it === hero) continue;
+  let shown = 0; const CH = 240, mkCard = it => {
     const b = getBook(it.id); const pct = Math.round((b.prog?.pct || 0) * 100);
     const d = document.createElement('div'); d.className = 'card';
     d.innerHTML = '<div class="cover"></div><div class="t"></div><div class="prog"><i></i></div>' + (dlCache.has(it.id) ? '<span class="badge">offline</span>' : '');
@@ -398,7 +397,13 @@ function renderLibrary() {
     let lp; d.addEventListener('touchstart', () => lp = setTimeout(() => cardMenu(it), 650), { passive: true });
     ['touchend', 'touchmove'].forEach(ev => d.addEventListener(ev, () => clearTimeout(lp), { passive: true }));
     grid.appendChild(d);
-  }
+  };
+  const more = () => {                               // estante enorme: desenha aos poucos
+    const end = Math.min(list.length, shown + CH);
+    for (; shown < end; shown++) if (list[shown] !== hero) mkCard(list[shown]);
+    if (shown < list.length) { const sn = document.createElement('div'); sn.style.cssText = 'grid-column:1/-1;height:1px'; grid.appendChild(sn); new IntersectionObserver((es, ob) => { if (es[0].isIntersecting) { ob.disconnect(); sn.remove(); more(); } }, { root: grid, rootMargin: '1200px' }).observe(sn); }
+  };
+  more();
 }
 function cardMenu(it) {
   modal(`<div class="box"><b></b><div class="row"><button id="mCat">Categoria</button><button id="mDel" class="danger">${dlCache.has(it.id) ? 'Remover cópia offline' : ''}</button>${it.local ? '<button id="mRm" class="danger">Remover da estante</button>' : ''}<span class="sp"></span><button id="mX">Fechar</button></div></div>`);
@@ -1376,7 +1381,7 @@ $('#dBack').onclick = () => { $('#disc').hidden = true; $('#lib').hidden = false
 $('#dq').addEventListener('input', e => { dst.q = e.target.value; renderDisc(); });
 
 /* ---- iniciar ---- */
-window.gisReady = () => { if (lsGet('wasLogged', false) && !authed() && cfg.clientId && !S.library.length) showBanner('Toque para entrar de novo.', true); };
+window.gisReady = () => { };                     // o init() decide se mostra aviso (evita corrida com o carregamento da estante)
 window.addEventListener('online', () => { if (cur) syncBook(cur.item.id); });
 (async function init() {
   await idb.open();
